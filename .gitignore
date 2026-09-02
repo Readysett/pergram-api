@@ -1,0 +1,34 @@
+# The database holds wallet addresses, nonces, receipt hashes and session
+# rows. Sessions store a sha256 of the token rather than the token, so a
+# leak would not hand anyone a working login — but it is still real user
+# data. SQLite writes three files; the -wal carries recent writes and is
+# usually the largest.
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets. Railway holds the real values as environment variables.
+.env
+.env.*
+!.env.example
+
+node_modules/
+off-cache/
+
+# Stale copies of the frontend, which lives in pergram-app. They are kept
+# on disk for now but do not belong in this repo: publishing a second,
+# older copy of a file is how the wrong one gets edited.
+api.js
+api-v2.js
+index.html
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local scratch
+*.log
+npm-debug.log*
