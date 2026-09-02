@@ -83,7 +83,7 @@ app.get('/api/week', requireAuth, (req, res) => {
   const claims = db.prepare(`
     SELECT product, source_key, protein_g, points, co2_kg, created_at
     FROM claim WHERE wallet=? AND round_id=? ORDER BY created_at DESC
-  `).all(String(req.params.wallet).toLowerCase(), round.id);
+  `).all(req.wallet, round.id);
 
   res.json({
     round: round.id,
