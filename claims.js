@@ -54,8 +54,33 @@ export async function submitClaim({ wallet, receipt, items }){
   if (seen){
     if (seen.wallet !== addr){
       flagForReview(addr, 'receipt-reuse', 'key ' + key.slice(0,12) + ' first seen on ' + seen.wallet);
+      return { ok:false, error:'receipt could not be accepted' };
     }
-    return { ok:false, error:'receipt could not be accepted' };
+
+    /* The same wallet sending the same receipt again is a retry, not a
+       second claim. Refusing it would be honest and still wrong: the
+       caller treats a refusal as "store this on the device instead", so
+       a receipt accepted once ends up counted twice. Replay the original
+       result — sending the request twice must leave the same state as
+       sending it once. */
+    const prior = db.prepare(`
+      SELECT barcode, protein_g, points FROM claim WHERE wallet=? AND receipt_key=?
+    `).all(addr, key);
+    const t = weekTotals(addr, round.id);
+    return {
+      ok: true,
+      round: round.id,
+      replayed: true,
+      accepted: prior.map(c => ({ barcode: c.barcode, protein_g: c.protein_g, points: c.points })),
+      week: {
+        protein_g: t.protein,
+        counted_g: Math.min(t.protein, WEEKLY_CAP_G),
+        cap_g: WEEKLY_CAP_G,
+        points_raw: t.points,
+        co2_kg: t.co2,
+        over_cap: t.protein > WEEKLY_CAP_G,
+      },
+    };
   }
 
   /* A receipt dated in the future, or long in the past, is either a bad
