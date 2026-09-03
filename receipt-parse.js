@@ -260,6 +260,12 @@ export function resolveQuantity({ line, quantity, productName } = {}){
   const linePack = line ? parsePackSize(line.text) : null;
   const offPack  = parsePackSize(quantity);
 
+  /* No matching line means the receipt does not show this being bought,
+     and the product record alone says only what a unit weighs — never
+     that one was purchased. Reporting a quantity here would let a scan
+     stand in for evidence, which is the thing receipts exist to stop. */
+  if (!line) return { count: 1, per_unit: null, grams: null, pack: offPack, ask: null };
+
   /* A pack printed on the receipt line — "6 X 142G" — states how many
      units were bought, not what one weighs. It multiplies the count; it
      does not compete with the product record over unit size. */

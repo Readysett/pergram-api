@@ -73,6 +73,12 @@ const i = resolveQuantity({ line: L('WHEY ISO CHOC 900G'), quantity: '6 x 142 g'
 eq('lower of two real readings', i.grams, 852);
 ok('but the receipt spoke, so no ask', i.ask === null);
 
+/* Not on the receipt at all. The product record knows what a unit weighs
+   but not that one was bought, so it must not supply a quantity. */
+const j = resolveQuantity({ line: null, quantity: '3 x 80 g' });
+eq('no line, no quantity', [j.count, j.grams], [1, null]);
+ok('and no question either', j.ask === null);
+
 /* Nothing to go on. Better to report nothing than to guess. */
 const g = resolveQuantity({ line: L('MYSTERY ITEM'), quantity: null });
 eq('unknown stays unknown', [g.count, g.grams], [1, null]);
