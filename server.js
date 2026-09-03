@@ -6,10 +6,21 @@ import { receiptKey } from './claims.js';
 import { db, currentRound, ensureWallet, now } from './db.js';
 import { submitClaim, weekTotals, WEEKLY_CAP_G } from './claims.js';
 import { isPerson } from './passport.js';
-import { createNonce, verifySignature, requireAuth, revoke, sweep } from './auth.js';
+import { createNonce, verifySignature, requireAuth, requireAdmin, revoke, sweep } from './auth.js';
+import { rateLimit, sweepLimits } from './rate-limit.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+/* Behind Railway's edge every request arrives from the proxy, so without
+   this req.ip is the same address for everybody and a per-IP limit
+   becomes one shared bucket that all users fill together.
+ *
+ * One hop, not `true`. Trusting the whole chain means taking the
+ * left-most X-Forwarded-For entry, which the client writes — so anyone
+ * could pick a fresh IP per request and never be limited. Trusting one
+ * hop takes the address the proxy itself observed. */
+app.set('trust proxy', 1);
 
 /* The app is served from a different origin to this API, so without CORS
    the browser blocks every call before it leaves the page — and it looks
@@ -24,7 +35,7 @@ app.use((req, res, next) => {
   if (origin && ALLOWED.includes(origin)){
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -44,7 +55,25 @@ app.get('/api/passport/:wallet', async (req, res) => {
 
 /* ---------- auth ---------- */
 
-app.post('/api/auth/nonce', (req, res) => {
+/* Issuing a nonce is a database write that anyone can ask for, against
+   any address, without proving anything. Two limits rather than one: the
+   per-IP limit is what stops a flood, and the per-wallet limit is what
+   stops one address being targeted from many places.
+ *
+ * The numbers are set for what signing in actually looks like — one
+ * nonce, occasionally a retry. Twenty a minute per IP leaves room for a
+ * shared network; five a minute per wallet leaves room for a person
+ * fumbling a wallet prompt, and no room for anything else. */
+const nonceByIp = rateLimit({
+  name: 'nonce-ip', windowMs: 60_000, max: 20,
+  key: req => req.ip,
+});
+const nonceByWallet = rateLimit({
+  name: 'nonce-wallet', windowMs: 60_000, max: 5,
+  key: req => String((req.body || {}).wallet || '').toLowerCase(),
+});
+
+app.post('/api/auth/nonce', nonceByIp, nonceByWallet, (req, res) => {
   const out = createNonce((req.body || {}).wallet);
   if (!out) return res.status(400).json({ ok:false, error:'bad wallet address' });
   res.json({ ok:true, ...out });
@@ -111,7 +140,10 @@ app.post('/api/flag', (req, res) => {
   res.json({ ok:true });
 });
 
-app.get('/api/review', (req, res) => {
+/* The review queue is every signal the anti-fraud heuristics have
+   raised: which wallets look like farms, and why. Open, it is a map of
+   what the checks notice and therefore what to avoid doing. */
+app.get('/api/review', requireAdmin, (req, res) => {
   res.json(db.prepare(`SELECT * FROM review WHERE cleared=0 ORDER BY created_at DESC LIMIT 200`).all());
 });
 
@@ -191,6 +223,11 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
 });
 
 setInterval(sweep, 3600 * 1000).unref();
+
+/* More often than the nonce sweep: these expire in a minute, and a
+   caller rotating addresses would otherwise grow the map between
+   passes. */
+setInterval(sweepLimits, 60 * 1000).unref();
 
 const port = process.env.PORT || 8787;
 app.listen(port, () => console.log('Per Gram API on http://localhost:' + port));

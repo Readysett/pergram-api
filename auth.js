@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { verifyMessage } from 'ethers';
 import { Certificate } from '@vechain/sdk-core';
 import { db, now, ensureWallet } from './db.js';
@@ -172,6 +172,51 @@ export function requireAuth(req, res, next){
   if (!wallet) return res.status(401).json({ ok: false, error: 'not signed in' });
   req.wallet = wallet;
   next();
+}
+
+/**
+ * Express middleware for the one route only the operator should see.
+ *
+ * A shared secret rather than a role, because there is one admin and no
+ * user to model. Modelling a role would mean a users table, a grant, and
+ * a way to revoke it — all to express a fact that fits in an environment
+ * variable.
+ *
+ * With no secret set the route is closed, not open. A queue of fraud
+ * signals that falls open when a variable is missing is worse than one
+ * that is unreachable until it is set, and a missing variable is exactly
+ * what happens on a fresh deploy.
+ *
+ * The comparison is over digests: equal length whatever is sent, so it
+ * leaks neither the secret's length nor, through timing, its prefix.
+ */
+export function requireAdmin(req, res, next){
+  const secret = process.env.ADMIN_TOKEN || '';
+  const sent   = String(req.headers['x-admin-token'] || '');
+
+  /* One flat refusal for every reason, including "nobody configured
+     this". Telling a caller the route exists but is unconfigured is a
+     map of what to come back for. */
+  const no = () => res.status(401).json({ ok:false, error:'not authorised' });
+
+  /* Short enough to guess is not a secret. Refusing here means a weak
+     value fails closed at the door rather than protecting nothing. */
+  if (secret.length < 24) return no();
+  if (!sent) return no();
+
+  const a = createHash('sha256').update(sent).digest();
+  const b = createHash('sha256').update(secret).digest();
+  if (!timingSafeEqual(a, b)) return no();
+
+  next();
+}
+
+/* Say so at boot rather than at the first request. An operator who
+   cannot reach their own review queue should know why immediately. */
+if (process.env.NODE_ENV === 'production' && (process.env.ADMIN_TOKEN || '').length < 24){
+  console.warn(
+    '\n  WARNING: ADMIN_TOKEN is unset or shorter than 24 characters.\n' +
+    '  /api/review will refuse every request until it is set.\n');
 }
 
 /* Housekeeping: expired nonces and sessions are noise, and a growing
