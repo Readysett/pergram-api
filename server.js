@@ -69,7 +69,25 @@ app.post('/api/auth/nonce', nonceByIp, nonceByWallet, (req, res) => {
   res.json({ ok:true, ...out });
 });
 
-app.post('/api/auth/verify', (req, res) => {
+/* Verifying costs real work — a signature recovery, and for a
+   certificate a hash of the whole payload before it. That makes this the
+   more attractive of the two auth endpoints to point a machine at: a
+   nonce is a row, this is CPU, and neither needs a session first.
+ *
+ * Keyed on the address only. There is no wallet to key on for a
+ * certificate — the signer is inside the signature, and reading it out
+ * before verifying would mean trusting the thing under test. Nothing is
+ * written here either, so there is no per-wallet resource to protect;
+ * the nonce limit already covers being targeted by address.
+ *
+ * Ten a minute against one nonce a sign-in: room to fumble a wallet
+ * prompt several times, none to grind.  */
+const verifyByIp = rateLimit({
+  name: 'verify-ip', windowMs: 60_000, max: 10,
+  key: clientIp,
+});
+
+app.post('/api/auth/verify', verifyByIp, (req, res) => {
   const out = verifySignature(req.body || {});
   res.status(out.ok ? 200 : 401).json(out);
 });

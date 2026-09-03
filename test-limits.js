@@ -133,6 +133,23 @@ console.log('\n--- which address gets counted ---');
      hit('198.51.100.7', '198.51.100.7, 84.17.44.229'));
 }
 
+console.log('\n--- the two auth limits are separate ---');
+{
+  __resetLimits();
+  const ip = h => ({ headers: { 'x-real-ip': h }, body: {} });
+  const nonce  = rateLimit({ name:'nonce-ip',  windowMs: 60_000, max: 20, key: clientIp });
+  const verify = rateLimit({ name:'verify-ip', windowMs: 60_000, max: 10, key: clientIp });
+
+  /* Spending the cheaper budget must not spend the expensive one. */
+  for (let i = 0; i < 20; i++) run(nonce, ip('203.0.113.9'));
+  ok('the nonce budget is spent',        !run(nonce,  ip('203.0.113.9')).passed);
+  ok('but verify still has its own',      run(verify, ip('203.0.113.9')).passed);
+
+  for (let i = 0; i < 9; i++) run(verify, ip('203.0.113.9'));
+  ok('and verify runs out at its own ten', !run(verify, ip('203.0.113.9')).passed);
+  ok('another caller is untouched',         run(verify, ip('198.51.100.7')).passed);
+}
+
 console.log('\n--- housekeeping ---');
 {
   __resetLimits();
