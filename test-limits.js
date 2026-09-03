@@ -1,6 +1,6 @@
 /* Limits and the admin door. Each one is a way in that used to be open. */
 import { requireAdmin } from './auth.js';
-import { rateLimit, sweepLimits, __resetLimits, __bucketCount } from './rate-limit.js';
+import { rateLimit, sweepLimits, clientIp, __resetLimits, __bucketCount } from './rate-limit.js';
 
 let failures = 0;
 const ok = (name, cond) => { if (!cond) failures++; console.log((cond ? 'ok   ' : 'FAIL ') + name); };
@@ -90,6 +90,43 @@ console.log('\n--- the shape of the two nonce limits ---');
   __resetLimits();
   ok('a missing wallet is not a bucket',
      [1,2,3,4,5,6,7].every(() => run(byWallet, { ip:'1.1.1.1', body:{} }).passed));
+}
+
+console.log('\n--- which address gets counted ---');
+{
+  const req = (xff, sock) => ({
+    headers: xff === null ? {} : { 'x-forwarded-for': xff },
+    socket: { remoteAddress: sock || null },
+  });
+
+  ok('one proxy, one entry',
+     clientIp(req('203.0.113.9')) === '203.0.113.9');
+
+  /* The client wrote the first entry itself. The edge appended the
+     address it actually saw, and that is the one to count. */
+  ok('a forged prefix does not displace the real address',
+     clientIp(req('8.8.8.8, 203.0.113.9')) === '203.0.113.9');
+
+  ok('several forged entries change nothing',
+     clientIp(req('1.2.3.4, 5.6.7.8, 9.9.9.9, 203.0.113.9')) === '203.0.113.9');
+
+  ok('spacing does not matter',
+     clientIp(req('8.8.8.8,203.0.113.9')) === '203.0.113.9');
+
+  ok('no proxy falls back to the socket',
+     clientIp(req(null, '127.0.0.1')) === '127.0.0.1');
+
+  ok('an empty header falls back too',
+     clientIp(req('', '127.0.0.1')) === '127.0.0.1');
+
+  /* Two callers behind the same edge must not share a bucket, which is
+     the whole failure this replaced. */
+  __resetLimits();
+  const mw = rateLimit({ name:'ip2', windowMs: 60_000, max: 2, key: clientIp });
+  const hit = xff => run(mw, req(xff)).passed;
+  hit('8.8.8.8, 10.0.0.1'); hit('8.8.8.8, 10.0.0.1');
+  ok('one caller is limited after its own two',   !hit('9.9.9.9, 10.0.0.1'));
+  ok('a different caller still gets its own two',  hit('8.8.8.8, 10.0.0.2'));
 }
 
 console.log('\n--- housekeeping ---');

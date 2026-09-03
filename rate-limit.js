@@ -13,6 +13,31 @@
 
 const buckets = new Map();
 
+/* The address to count a request against, behind a proxy that appends.
+ *
+ * Each proxy appends the address it received the connection from, so the
+ * last entry in X-Forwarded-For is the one Railway's edge observed: the
+ * real client. Anything a client writes into that header itself lands to
+ * the left of it and cannot displace it, which is what makes the
+ * right-hand end the only part worth trusting.
+ *
+ * Express's `trust proxy` looked like the way to do this and is not. As
+ * a number it counts hops from the right and returns an entry further
+ * left; as `true` it returns the left-most, which is the one the client
+ * writes. The first was deployed and produced a different key on almost
+ * every request, so the limit never counted twice against anyone and
+ * thirty requests in a second all passed. Computing it here is longer
+ * but says exactly what it trusts.
+ */
+export function clientIp(req){
+  const xff = String((req.headers && req.headers['x-forwarded-for']) || '');
+  const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
+  if (parts.length) return parts[parts.length - 1];
+
+  /* No proxy in front — local development, or a direct connection. */
+  return (req.socket && req.socket.remoteAddress) || req.ip || '';
+}
+
 /**
  * @param {string} name      namespace, so two limits never share a bucket
  * @param {number} windowMs  how long a window lasts

@@ -7,20 +7,10 @@ import { db, currentRound, ensureWallet, now } from './db.js';
 import { submitClaim, weekTotals, WEEKLY_CAP_G } from './claims.js';
 import { isPerson } from './passport.js';
 import { createNonce, verifySignature, requireAuth, requireAdmin, revoke, sweep } from './auth.js';
-import { rateLimit, sweepLimits } from './rate-limit.js';
+import { rateLimit, sweepLimits, clientIp } from './rate-limit.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
-
-/* Behind Railway's edge every request arrives from the proxy, so without
-   this req.ip is the same address for everybody and a per-IP limit
-   becomes one shared bucket that all users fill together.
- *
- * One hop, not `true`. Trusting the whole chain means taking the
- * left-most X-Forwarded-For entry, which the client writes — so anyone
- * could pick a fresh IP per request and never be limited. Trusting one
- * hop takes the address the proxy itself observed. */
-app.set('trust proxy', 1);
 
 /* The app is served from a different origin to this API, so without CORS
    the browser blocks every call before it leaves the page — and it looks
@@ -66,7 +56,7 @@ app.get('/api/passport/:wallet', async (req, res) => {
  * fumbling a wallet prompt, and no room for anything else. */
 const nonceByIp = rateLimit({
   name: 'nonce-ip', windowMs: 60_000, max: 20,
-  key: req => req.ip,
+  key: clientIp,
 });
 const nonceByWallet = rateLimit({
   name: 'nonce-wallet', windowMs: 60_000, max: 5,
