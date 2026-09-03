@@ -63,7 +63,12 @@ const nonceByWallet = rateLimit({
   key: req => String((req.body || {}).wallet || '').toLowerCase(),
 });
 
-app.post('/api/auth/nonce', nonceByIp, nonceByWallet, (req, res) => {
+/* TEMPORARY: what does the edge actually send? Removed once answered. */
+app.post('/api/auth/nonce', (req, res, next) => {
+  console.log('DIAG headers=' + JSON.stringify(req.headers) +
+              ' socket=' + (req.socket && req.socket.remoteAddress));
+  next();
+}, nonceByIp, nonceByWallet, (req, res) => {
   const out = createNonce((req.body || {}).wallet);
   if (!out) return res.status(400).json({ ok:false, error:'bad wallet address' });
   res.json({ ok:true, ...out });
