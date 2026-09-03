@@ -167,7 +167,11 @@ app.get('/api/review', requireAdmin, (req, res) => {
  * a known name against candidate lines is a far smaller problem than
  * reading receipt lines cold.
  */
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+/* Six, not eight. Vision caps a JSON request at 10MB and base64 inflates
+   by a third, so anything past about 7.5MB cannot be sent inline at all.
+   The client downscales before uploading; this is the backstop for
+   anything that does not. */
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 6 * 1024 * 1024 } });
 
 app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) => {
   try {
