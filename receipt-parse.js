@@ -103,7 +103,11 @@ function findItems(lines){
     if (!m) continue;
     const desc = l.slice(0, l.length - m[0].length).trim();
     if (desc.length < 3) continue;
-    out.push({ text: desc, cents: Math.round(parseFloat(m[1].replace(',', '.')) * 100) });
+    out.push({
+      text: desc,
+      cents: Math.round(parseFloat(m[1].replace(',', '.')) * 100),
+      qty: extractCount(l),          // null when the receipt does not say
+    });
   }
   return out;
 }
@@ -177,6 +181,60 @@ export function matchProduct(productName, lines, { min = 0.25, minHits = 2 } = {
   return { ...best, score: Number(bestScore.toFixed(2)), hits: bestHits };
 }
 
+/* Weight units seen in package descriptions. Volume is converted as if it
+   were water: milk is denser, so the result comes out slightly low, which
+   is the direction to be wrong in. */
+const UNIT_G = {
+  G:1, GR:1, GRAM:1, GRAMS:1, KG:1000, KGS:1000,
+  OZ:28.3495, LB:453.592, LBS:453.592, ML:1, L:1000, LT:1000, LTR:1000,
+};
+
+/* Pack size from free text: "6 x 142 g", "900g", "2 LB".
+ *
+ * Returns { count, unit_g, total_g }, where total_g already includes the
+ * multiplier. Callers use total_g and never re-apply count — applying it
+ * twice is how a six-pack becomes thirty-six tins.
+ */
+export function parsePackSize(text){
+  const s = String(text || '').toUpperCase().replace(/,/g, '.');
+  if (!s.trim()) return null;
+
+  const grams = (n, unit) => {
+    const f = UNIT_G[unit];
+    return f ? Math.round(parseFloat(n) * f) : null;
+  };
+
+  /* "6 x 142 g" — the barcode denotes the whole pack. */
+  let m = s.match(/(\d{1,3})\s*[X\u00D7]\s*(\d+(?:\.\d+)?)\s*([A-Z]+)/);
+  if (m){
+    const count  = parseInt(m[1], 10);
+    const unit_g = grams(m[2], m[3]);
+    if (unit_g && count > 0) return { count, unit_g, total_g: unit_g * count };
+  }
+
+  /* A plain weight: one unit of whatever this is. */
+  m = s.match(/(\d+(?:\.\d+)?)\s*([A-Z]+)/);
+  if (m){
+    const unit_g = grams(m[1], m[2]);
+    if (unit_g) return { count: 1, unit_g, total_g: unit_g };
+  }
+  return null;
+}
+
+/* How many of a line were bought. Only forms a receipt states plainly:
+   inferring a count from a stray digit is worse than defaulting to one. */
+export function extractCount(text){
+  const s = String(text || '').toUpperCase();
+
+  let m = s.match(/(\d{1,3})\s*@\s*\$?\d/);          // "2 @ 3.49"
+  if (m && +m[1] > 0) return +m[1];
+
+  m = s.match(/\bQTY\b\s*[:X]?\s*(\d{1,3})\b/);      // "QTY 2"
+  if (m && +m[1] > 0) return +m[1];
+
+  return null;
+}
+
 /* Package size off the line or the product name: 900G, 8OZ, 2 LB. */
 export function extractGrams(text){
   const s = String(text || '').toUpperCase();
@@ -186,3 +244,62 @@ export function extractGrams(text){
   m = s.match(/(\d{1,3}(?:\.\d+)?)\s*LBS?\b/); if (m) return Math.round(+m[1] * 453.6);
   return null;
 }
+
+/* Below this ratio the two readings are close enough that asking costs
+   more than it settles. */
+export const ASK_RATIO = 2;
+
+/* How much food a receipt line represents.
+ *
+ * Three separate facts arrive from three places: the barcode says what the
+ * product is, the receipt says it was bought and how many, and the pack
+ * size comes from whichever of them states one. None is authoritative for
+ * all three, so they are combined rather than ranked.
+ */
+export function resolveQuantity({ line, quantity, productName } = {}){
+  const linePack = line ? parsePackSize(line.text) : null;
+  const offPack  = parsePackSize(quantity);
+
+  /* A pack printed on the receipt line — "6 X 142G" — states how many
+     units were bought, not what one weighs. It multiplies the count; it
+     does not compete with the product record over unit size. */
+  const count = ((line && line.qty) || 1) * (linePack ? linePack.count : 1);
+
+  /* Readings of what one unit weighs. These genuinely compete: the record
+     may describe a pack while the receipt describes a tin. */
+  const lineSize = linePack ? linePack.unit_g
+                 : line   ? (extractGrams(line.text) || extractGrams(productName))
+                          : null;
+  const readings = [lineSize, offPack && offPack.total_g].filter(n => n > 0);
+
+  /* Take the lowest. Someone underpaid can be corrected later; an
+     overpayment cannot be recovered, so doubt resolves downward. */
+  const per_unit = readings.length ? Math.min(...readings) : null;
+
+  /* per_unit already carries any pack multiplier from the product record,
+     and count carries any stated on the receipt. Neither is applied twice
+     — doing that is how a six-pack becomes thirty-six tins. */
+  const grams = per_unit === null ? null : per_unit * count;
+
+  /* An answer must never be able to raise the claim, which leaves exactly
+     one question worth asking: a multipack from the product record that
+     nothing else corroborates. Scanning a single tin from inside a pack
+     looks identical to buying the pack, and no parsing separates them.
+     Confirming keeps the figure, correcting lowers it.
+
+     Where a lower reading was already taken there is nothing to ask, and
+     that line stays underpaid until a receipt settles it. */
+  const ask = (offPack && offPack.count > 1
+               && !lineSize                       // the receipt said nothing about size
+               && per_unit === offPack.total_g
+               && offPack.total_g > offPack.unit_g * ASK_RATIO)
+    ? {
+        question: 'Did you buy the ' + offPack.count + '-pack, or a single unit?',
+        keep_g:  offPack.total_g * count,
+        lower_g: offPack.unit_g  * count,
+      }
+    : null;
+
+  return { count, per_unit, grams, pack: offPack || linePack || null, ask };
+}
+

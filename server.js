@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import { ocr, imageHash } from './ocr.js';
-import { parseReceipt, matchProduct, extractGrams } from './receipt-parse.js';
+import { parseReceipt, matchProduct, resolveQuantity } from './receipt-parse.js';
 import { receiptKey } from './claims.js';
 import { db, currentRound, ensureWallet, now } from './db.js';
 import { submitClaim, weekTotals, WEEKLY_CAP_G } from './claims.js';
@@ -155,14 +155,17 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
 
     const matches = scanned.map(p => {
       const line = matchProduct(p.name || '', parsed.lines);
-      const grams = line ? (extractGrams(line.text) || extractGrams(p.name)) : null;
+      const q    = resolveQuantity({ line, quantity: p.quantity, productName: p.name });
       return {
         barcode: p.barcode, name: p.name,
         matched: !!line,
         line: line ? line.text : null,
         score: line ? line.score : 0,
-        grams,
-        protein_g: (grams && p.protein100) ? +(grams * p.protein100 / 100).toFixed(1) : null,
+        count: q.count,
+        pack:  q.pack,
+        grams: q.grams,
+        ask:   q.ask,
+        protein_g: (q.grams && p.protein100) ? +(q.grams * p.protein100 / 100).toFixed(1) : null,
       };
     });
 
