@@ -94,39 +94,43 @@ console.log('\n--- the shape of the two nonce limits ---');
 
 console.log('\n--- which address gets counted ---');
 {
-  const req = (xff, sock) => ({
-    headers: xff === null ? {} : { 'x-forwarded-for': xff },
+  const req = (headers, sock) => ({
+    headers: headers || {},
     socket: { remoteAddress: sock || null },
   });
 
-  ok('one proxy, one entry',
-     clientIp(req('203.0.113.9')) === '203.0.113.9');
+  ok('the edge-set address is what counts',
+     clientIp(req({ 'x-real-ip': '203.0.113.9' })) === '203.0.113.9');
 
-  /* The client wrote the first entry itself. The edge appended the
-     address it actually saw, and that is the one to count. */
-  ok('a forged prefix does not displace the real address',
-     clientIp(req('8.8.8.8, 203.0.113.9')) === '203.0.113.9');
+  /* Forwarded-For's right-hand end is the edge node, which differs
+     between requests; counting it was why the limit never fired. */
+  ok('forwarded-for is ignored entirely',
+     clientIp(req({ 'x-real-ip': '203.0.113.9',
+                    'x-forwarded-for': '203.0.113.9, 84.17.44.229' })) === '203.0.113.9');
 
-  ok('several forged entries change nothing',
-     clientIp(req('1.2.3.4, 5.6.7.8, 9.9.9.9, 203.0.113.9')) === '203.0.113.9');
+  ok('and ignored even when it alone is present',
+     clientIp(req({ 'x-forwarded-for': '8.8.8.8, 84.17.44.229' }, '10.0.0.9')) === '10.0.0.9');
 
-  ok('spacing does not matter',
-     clientIp(req('8.8.8.8,203.0.113.9')) === '203.0.113.9');
+  ok('surrounding space is trimmed',
+     clientIp(req({ 'x-real-ip': '  203.0.113.9 ' })) === '203.0.113.9');
 
-  ok('no proxy falls back to the socket',
-     clientIp(req(null, '127.0.0.1')) === '127.0.0.1');
+  ok('no header falls back to the socket',
+     clientIp(req({}, '127.0.0.1')) === '127.0.0.1');
 
   ok('an empty header falls back too',
-     clientIp(req('', '127.0.0.1')) === '127.0.0.1');
+     clientIp(req({ 'x-real-ip': '' }, '127.0.0.1')) === '127.0.0.1');
 
-  /* Two callers behind the same edge must not share a bucket, which is
-     the whole failure this replaced. */
+  /* Two callers must not share a bucket, which is the failure this
+     replaced — and one caller must not escape by changing edge node. */
   __resetLimits();
   const mw = rateLimit({ name:'ip2', windowMs: 60_000, max: 2, key: clientIp });
-  const hit = xff => run(mw, req(xff)).passed;
-  hit('8.8.8.8, 10.0.0.1'); hit('8.8.8.8, 10.0.0.1');
-  ok('one caller is limited after its own two',   !hit('9.9.9.9, 10.0.0.1'));
-  ok('a different caller still gets its own two',  hit('8.8.8.8, 10.0.0.2'));
+  const hit = (real, xff) => run(mw, req({ 'x-real-ip': real, 'x-forwarded-for': xff })).passed;
+  hit('203.0.113.9', '203.0.113.9, 84.17.44.229');
+  hit('203.0.113.9', '203.0.113.9, 84.17.44.228');
+  ok('a different edge node is not a fresh bucket',
+     !hit('203.0.113.9', '203.0.113.9, 84.17.44.227'));
+  ok('a different caller still gets its own two',
+     hit('198.51.100.7', '198.51.100.7, 84.17.44.229'));
 }
 
 console.log('\n--- housekeeping ---');

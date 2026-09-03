@@ -13,28 +13,33 @@
 
 const buckets = new Map();
 
-/* The address to count a request against, behind a proxy that appends.
+/* The address to count a request against.
  *
- * Each proxy appends the address it received the connection from, so the
- * last entry in X-Forwarded-For is the one Railway's edge observed: the
- * real client. Anything a client writes into that header itself lands to
- * the left of it and cannot displace it, which is what makes the
- * right-hand end the only part worth trusting.
+ * Railway's edge sets x-real-ip to the address it accepted the connection
+ * from, and overwrites whatever the caller sent: a request carrying a
+ * forged `X-Real-IP: 9.9.9.9` arrived with the true address in its place.
+ * That is what makes this header, and only this header, safe to count.
  *
- * Express's `trust proxy` looked like the way to do this and is not. As
- * a number it counts hops from the right and returns an entry further
- * left; as `true` it returns the left-most, which is the one the client
- * writes. The first was deployed and produced a different key on almost
- * every request, so the limit never counted twice against anyone and
- * thirty requests in a second all passed. Computing it here is longer
- * but says exactly what it trusts.
+ * Not X-Forwarded-For. Its right-hand end is the edge node rather than
+ * the caller, and that node varies between requests — two addresses
+ * appeared inside a single burst — so a limit keyed on it lands in a
+ * fresh bucket every few requests and never fires. Its left-hand end is
+ * the caller, but in the general case the caller writes it; here Railway
+ * discards what was sent, which is a property of this host and not of
+ * the header, so it is not worth depending on.
+ *
+ * Not the socket address either: that is the internal mesh peer, and it
+ * changed on every single request.
+ *
+ * Behind a proxy that does not set x-real-ip, the fallback is the socket
+ * address. That collapses everyone into one bucket and over-limits, which
+ * is the right direction to fail: an outage is visible, a silently absent
+ * limit is not — which is precisely how this shipped broken twice.
  */
 export function clientIp(req){
-  const xff = String((req.headers && req.headers['x-forwarded-for']) || '');
-  const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
-  if (parts.length) return parts[parts.length - 1];
+  const real = String((req.headers && req.headers['x-real-ip']) || '').trim();
+  if (real) return real;
 
-  /* No proxy in front — local development, or a direct connection. */
   return (req.socket && req.socket.remoteAddress) || req.ip || '';
 }
 
