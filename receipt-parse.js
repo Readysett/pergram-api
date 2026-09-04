@@ -71,6 +71,38 @@ function splitAtGutters(words, unit){
   return groups.map(g => g.map(x => x.text).join(' ').trim()).filter(Boolean);
 }
 
+/* Separate a set of numbers into the two groups it is made of.
+ *
+ * Lloyd's algorithm in one dimension, seeded at the extremes. Two
+ * well-separated groups converge in a few passes, and the midpoint
+ * between the two centres is the boundary between them — which is the
+ * number actually wanted, rather than a position in the mixture.
+ *
+ * Returns null when there is nothing to separate.
+ */
+function twoClusters(values){
+  const vs = values.slice().sort((a, b) => a - b);
+  if (vs.length < 2) return null;
+
+  let lo = vs[0], hi = vs[vs.length - 1];
+  if (!(hi > lo)) return null;
+
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+
+  for (let pass = 0; pass < 20; pass++){
+    const mid   = (lo + hi) / 2;
+    const under = vs.filter(v => v <= mid);
+    const over  = vs.filter(v => v >  mid);
+    if (!under.length || !over.length) break;
+
+    const nlo = mean(under), nhi = mean(over);
+    if (nlo === lo && nhi === hi) break;
+    lo = nlo; hi = nhi;
+  }
+
+  return { lo, hi, boundary: (lo + hi) / 2 };
+}
+
 const median = ns => {
   const s = ns.slice().sort((a, b) => a - b);
   return s.length ? s[Math.floor(s.length / 2)] : 0;
@@ -94,53 +126,88 @@ const median = ns => {
  * are either jitter within a line or a step to the next one. The typical
  * step is the line pitch, and half of it separates the two.
  */
-function buildRows(words, { split = 0.5 } = {}){
+/* How far left a word has to appear before it is the start of a new row,
+   in heights of the text. */
+const X_RESET_HEIGHTS = 2;
+
+/* And how far into the page a row is allowed to begin. Receipts are set
+   flush left, so a row starts near the margin; a word further in than
+   this is continuing the row it is on, however far left it looks. */
+const LEFT_BAND = 0.35;
+
+/* Group words into printed lines.
+ *
+ * By where rows begin, not by how far apart they are. Every line on a
+ * receipt starts at the left margin and runs right, so a word appearing
+ * substantially left of where the current row has already reached is the
+ * beginning of the next one.
+ *
+ * The vertical signal was tried twice and cannot carry this. The words of
+ * one row do not share a centre, and on a receipt photographed at any
+ * distance the wobble within a row and the pitch between rows come out
+ * close enough to overlap — 12 against 24 on the shot this was written
+ * for. No threshold on y separates two populations that are not
+ * separated. The leftward jump is unambiguous by comparison: hundreds of
+ * pixels, against a row that otherwise only ever moves right.
+ *
+ * y is kept as a check rather than the signal. A word that has not moved
+ * down the page is on the line it was already on, whatever its x does.
+ */
+function buildRows(words){
   const ws = (words || []).filter(w =>
     w && w.text && Number.isFinite(w.x) && Number.isFinite(w.y));
-  if (!ws.length) return { rows: [], unit: 0, pitch: 0, gap: 0 };
-
-  const unit = median(ws.map(w => w.h).filter(h => h > 0)) || 10;
-
-  const sorted = ws.slice().sort((a, b) => a.y - b.y);
-
-  /* Steps between neighbouring centres. The ones near zero are words
-     sitting on the same line; the rest are the distance to the next. */
-  const steps = [];
-  for (let i = 1; i < sorted.length; i++){
-    const d = sorted[i].y - sorted[i - 1].y;
-    /* Below this it is jitter along one line, not a step to the next.
-       On a page photographed slightly askew the words of a single line
-       do not share a centre exactly. */
-    if (d > unit * 0.25) steps.push(d);
+  if (!ws.length){
+    return { rows: [], unit: 0, pitch: 0, jitter: 0, reset: 0, separated: false };
   }
 
-  /* A low percentile, not the median. The steps are a mix: most cross one
-     line, but a blank line or a change of section crosses two or three,
-     and those pull a median upward until it sits above the ordinary line
-     spacing — at which point neighbouring lines stop being separated at
-     all. The common case is the smallest one, so look near the bottom. */
-  const ordered = steps.slice().sort((a, b) => a - b);
-  const pitch = ordered.length ? ordered[Math.floor(ordered.length * 0.25)] : 0;
-  const gap   = pitch ? pitch * split : Infinity;
+  const unit   = median(ws.map(w => w.h).filter(h => h > 0)) || 10;
+  const sorted = ws.slice().sort((a, b) => a.y - b.y);
+
+  /* Kept for the diagnostic and no longer used to decide anything. When
+     these two come out close together it is the reason the vertical
+     signal was abandoned, and that is worth being able to see. */
+  const steps = [];
+  for (let i = 1; i < sorted.length; i++) steps.push(sorted[i].y - sorted[i - 1].y);
+  const c = twoClusters(steps);
+  const separated = !!c && (c.hi - c.lo) >= unit * 0.2;
+
+  const xs     = sorted.map(w => w.x);
+  const left   = Math.min(...xs);
+  const width  = Math.max(...sorted.map(w => Number.isFinite(w.x2) ? w.x2 : w.x)) - left;
+  const reset  = unit * X_RESET_HEIGHTS;
+  const margin = left + width * LEFT_BAND;
 
   const rows = [[sorted[0]]];
+  let reach = sorted[0].x;          // how far right this row has got
+
   for (let i = 1; i < sorted.length; i++){
-    /* Against the previous word, not against the row's running centre.
-       A centre that moves as the row grows is what let one row chain
-       across three lines. */
-    if (sorted[i].y - sorted[i - 1].y > gap) rows.push([sorted[i]]);
-    else rows[rows.length - 1].push(sorted[i]);
+    const w = sorted[i], prev = sorted[i - 1];
+
+    const wentLeft = (reach - w.x) > reset && w.x <= margin;
+    const wentDown = (w.y - prev.y) > unit * 0.1;
+
+    if (wentLeft && wentDown){
+      rows.push([w]);
+      reach = w.x;
+    } else {
+      rows[rows.length - 1].push(w);
+      if (w.x > reach) reach = w.x;
+    }
   }
 
   return {
     rows: rows.flatMap(r => splitAtGutters(r.slice().sort((a, b) => a.x - b.x), unit))
               .filter(Boolean),
-    unit, pitch, gap: pitch ? gap : 0,
+    unit,
+    pitch:  c ? c.hi : 0,
+    jitter: c ? c.lo : 0,
+    reset,
+    separated,
   };
 }
 
-export function linesFromWords(words, opts){
-  return buildRows(words, opts).rows;
+export function linesFromWords(words){
+  return buildRows(words).rows;
 }
 
 /**
@@ -183,7 +250,16 @@ export function parseReceipt(input){
     /* What the grouping measured. A wrong row is either a wrong pitch or
        a wrong rule applied to a right one, and those want looking at in
        different places. */
-    geometry: { text_height: built.unit, line_pitch: built.pitch, split_at: built.gap },
+    geometry: {
+      text_height:  built.unit,
+      row_jitter:   built.jitter,
+      line_pitch:   built.pitch,
+      x_reset_over: built.reset,
+      /* Whether the vertical signal could have been used at all. It is
+         not used either way; when this is false it is the evidence for
+         why. */
+      y_separable:  built.separated,
+    },
     raw:           raw,
   };
 }

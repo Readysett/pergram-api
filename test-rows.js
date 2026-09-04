@@ -104,15 +104,26 @@ console.log('\n--- lines closer together than the text is tall ---');
   ]);
   eq('and their words do not interleave', rows, ['AAA 1.99', 'CCC 2.99']);
 
-  /* A blank line is two pitches, and must still be a boundary rather than
-     setting the scale for everything else. */
-  eq('a blank line does not widen the rest',
+  /* Spacing no longer decides anything, so a blank line between two rows
+     changes nothing about the rows either side of it. */
+  eq('a blank line changes nothing',
      linesFromWords([
-       t('ITEM', 10, 90, 100),
-       t('NEXT', 10, 90, 116),
-       t('AFTER', 10, 90, 148),
+       t('ITEM', 10, 90, 100),  t('1.99', 600, 680, 100),
+       t('NEXT', 10, 90, 116),  t('2.99', 600, 680, 116),
+       t('AFTER', 10, 90, 148), t('3.99', 600, 680, 148),
      ]),
-     ['ITEM', 'NEXT', 'AFTER']);
+     ['ITEM 1.99', 'NEXT 2.99', 'AFTER 3.99']);
+
+  /* A known limit, written down rather than left to be rediscovered.
+     Rows of a single word each, all starting at the same x, offer no
+     leftward jump — and the vertical signal that would catch them is the
+     one that cannot be trusted. They merge. Real receipt lines carry a
+     price, which is what makes the jump exist. */
+  eq('single-word rows at one x cannot be told apart',
+     linesFromWords([
+       t('ONE', 10, 90, 100), t('TWO', 10, 90, 116), t('THREE', 10, 90, 132),
+     ]),
+     ['ONE TWO THREE']);
 
   /* A page photographed slightly askew: the words of one line do not
      share a centre exactly, and that wobble is not a line break. */
@@ -122,6 +133,31 @@ console.log('\n--- lines closer together than the text is tall ---');
        t('WHOLE', 10, 90, 116), t('MILK', 100, 180, 118),
      ]),
      ['CHUNK LIGHT TUNA', 'WHOLE MILK']);
+}
+
+console.log('\n--- when the vertical signal carries nothing at all ---');
+{
+  /* Taken from a real shot: text 20 high, words within a row spread over
+     12, rows 24 apart. Every step between neighbouring centres is then
+     the same 12, whether it crosses a row or not, and no threshold and no
+     clustering can separate a set with one value in it.
+   *
+   * The leftward jump is untouched by any of that. */
+  const r = (text, x, x2, y) => ({ text, x, x2, y, h: 20 });
+
+  const words = [
+    r('BAREBELLS', 10, 150, 100), r('3.49', 600, 660, 112),
+    r('BARILLA',   10, 140, 124), r('4.99', 600, 660, 136),
+  ];
+
+  eq('rows still come out right', linesFromWords(words),
+     ['BAREBELLS 3.49', 'BARILLA 4.99']);
+
+  const p = parseReceipt({ text: '', words });
+  ok('and the geometry admits y could not have done it',
+     p.geometry.y_separable === false);
+  ok('while reporting the height it measured',
+     p.geometry.text_height === 20);
 }
 
 console.log('\n--- a gap, and what is on the far side of it ---');
