@@ -95,15 +95,56 @@ async function googleVision(buf){
 
   if (!res.ok) throw new Error('vision HTTP ' + res.status);
 
-  const text = j && j.responses && j.responses[0]
-            && j.responses[0].fullTextAnnotation
-            && j.responses[0].fullTextAnnotation.text;
+  const first = (j && j.responses && j.responses[0]) || {};
+  const text  = first.fullTextAnnotation && first.fullTextAnnotation.text;
   if (!text) throw new Error('vision found no text in that image');
-  return text;
+
+  /* The text alone is not enough. Vision orders it by the blocks it
+     segmented, and on a receipt those are columns — every description,
+     then every price — so the reading order it hands back is not the
+     order the receipt was printed in. The word positions are what make
+     rows recoverable, so they travel with the text. */
+  const words = Array.isArray(first.textAnnotations)
+    ? wordBoxes(first.textAnnotations.slice(1))    // [0] is the whole text
+    : [];
+
+  return { text, words: words.length ? words : null };
 }
 
+/* Each annotation carries four corners. The documentation is explicit
+   that zero coordinates are omitted rather than sent as zero, so a word
+   flush against the left edge arrives with no x field at all — and
+   `v.x` would be undefined, which turns every later comparison into NaN
+   and silently drops the word. Default, do not assume. */
+function wordBoxes(annotations){
+  const out = [];
+  for (const a of annotations || []){
+    const vs = (a && a.boundingPoly && a.boundingPoly.vertices) || [];
+    if (!a.description || vs.length < 4) continue;
+
+    const xs = vs.map(v => (v && v.x) || 0);
+    const ys = vs.map(v => (v && v.y) || 0);
+    const top = Math.min(...ys), bottom = Math.max(...ys);
+
+    out.push({
+      text: a.description,
+      x: Math.min(...xs),
+      /* The centre, not the top edge: a photograph is never quite square
+         to the page, and a tall word beside a short one shares a centre
+         long before it shares an edge. */
+      y: (top + bottom) / 2,
+      h: bottom - top,
+    });
+  }
+  return out;
+}
+
+/* Returns { text, words }. words is null when the provider cannot say
+   where anything was — the fixture, for one — and the caller then has
+   nothing to reconstruct from and falls back to the text's own line
+   breaks. */
 export async function ocr(buf, { provider = process.env.OCR_PROVIDER || 'fake' } = {}){
   if (provider === 'google')   return googleVision(buf);
   if (provider === 'textract') throw new Error('textract adapter not written yet');
-  return FIXTURES.default;     // fake
+  return { text: FIXTURES.default, words: null };   // fake
 }

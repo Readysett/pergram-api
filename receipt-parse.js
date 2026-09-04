@@ -20,20 +20,85 @@ const MONEY = /(\d{1,4}[.,]\d{2})\s*$/;
 /* Common receipt lines that are never products. */
 const NOT_A_PRODUCT = /^(subtotal|sub total|total|tax|balance|change|cash|visa|mastercard|debit|credit|amex|tender|savings|discount|coupon|loyalty|points|thank you|transaction|auth|ref|store|tel|phone|www|http)/i;
 
-export function parseReceipt(text){
-  const raw   = String(text || '');
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+/* Rebuild reading order from where the words were.
+ *
+ * Vision returns text in the order it segmented the page, and on a
+ * receipt that segmentation is by column: every description, then every
+ * price. Read as lines, "TUNA CHNK" and "4.29" never appear together, so
+ * no amount of work further down can find a price for an item — the two
+ * were never on the same line to begin with.
+ *
+ * Words belong to the same row when their vertical centres are close
+ * relative to how tall the text is. Height sets the scale rather than a
+ * fixed pixel count, because the same receipt photographed closer is the
+ * same receipt with bigger numbers.
+ */
+export function linesFromWords(words, { tolerance = 0.6 } = {}){
+  const ws = (words || []).filter(w =>
+    w && w.text && Number.isFinite(w.x) && Number.isFinite(w.y));
+  if (!ws.length) return [];
 
+  /* A median, not a mean: one enormous misread should not widen every
+     row on the receipt. */
+  const heights = ws.map(w => w.h).filter(h => h > 0).sort((a, b) => a - b);
+  const unit = heights.length ? heights[Math.floor(heights.length / 2)] : 10;
+  const tol  = unit * tolerance;
+
+  const rows = [];
+  for (const w of [...ws].sort((a, b) => a.y - b.y)){
+    const row = rows.find(r => Math.abs(r.y - w.y) <= tol);
+    if (row){
+      row.words.push(w);
+      /* Track the row's centre as a running mean so it does not drift
+         toward whichever word happened to arrive first. */
+      row.y = (row.y * (row.words.length - 1) + w.y) / row.words.length;
+    } else {
+      rows.push({ y: w.y, words: [w] });
+    }
+  }
+
+  return rows
+    .sort((a, b) => a.y - b.y)
+    .map(r => r.words.slice().sort((a, b) => a.x - b.x).map(w => w.text).join(' ').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Accepts either the OCR text on its own, or { text, words } from an
+ * adapter that can say where the words were. Given positions, reading
+ * order is rebuilt and everything downstream reads rows; without them it
+ * falls back to the text's own line breaks, which is all the fixture and
+ * the older tests ever had.
+ */
+export function parseReceipt(input){
+  const src = typeof input === 'string' ? { text: input, words: null } : (input || {});
+  const raw = String(src.text || '');
+
+  const rebuilt = linesFromWords(src.words);
+  const lines   = rebuilt.length
+    ? rebuilt
+    : raw.split('\n').map(l => l.trim()).filter(Boolean);
+
+  /* Everything reads the rebuilt rows, including the whole-text regexes:
+     a date split across a column boundary is not findable in Vision's
+     ordering and is findable in this one. */
+  const text  = lines.join('\n');
   const found = findItems(lines);
 
   return {
     store:       findStore(lines),
-    purchased:   findDate(raw),
+    purchased:   findDate(text),
     total_cents: findTotal(lines),
-    txn:         findTxn(raw),
+    txn:         findTxn(text),
     lines:       found.items,
     dropped:     found.dropped,
-    raw:         raw,
+
+    /* What the rows were read as, and whether they were rebuilt or just
+       split on newlines. Without this the two are indistinguishable when
+       the answer comes out wrong. */
+    rows:          lines,
+    reconstructed: rebuilt.length > 0,
+    raw:           raw,
   };
 }
 

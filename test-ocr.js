@@ -12,7 +12,7 @@ const res  = (status, body) => ({ ok: status >= 200 && status < 300, status, jso
 
 const img = Buffer.from('not really a jpeg');
 const call = async () => {
-  try { return { text: await ocr(img, { provider: 'google' }) }; }
+  try { return await ocr(img, { provider: 'google' }); }
   catch (e){ return { err: e.message }; }
 };
 
@@ -84,10 +84,46 @@ console.log('\n--- the rest ---');
   process.env.GOOGLE_VISION_KEY = 'test-key';
 }
 
+console.log('\n--- where the words were ---');
+{
+  /* Vision omits zero coordinates rather than sending them, so the word
+     against the left margin has no x on any of its corners. Read
+     carelessly that is undefined, every comparison against it is NaN,
+     and the word vanishes from its row. */
+  stub(() => res(200, {
+    responses: [{
+      fullTextAnnotation: { text: 'TUNA\n4.29' },
+      textAnnotations: [
+        { description: 'TUNA 4.29' },                     // [0] is the whole text
+        { description: 'TUNA', boundingPoly: { vertices: [
+            { y: 100 }, { x: 60, y: 100 }, { x: 60, y: 120 }, { y: 120 } ] } },
+        { description: '4.29', boundingPoly: { vertices: [
+            { x: 420, y: 102 }, { x: 470, y: 102 }, { x: 470, y: 122 }, { x: 420, y: 122 } ] } },
+      ],
+    }],
+  }));
+  const r = await call();
+  ok('words come back with the text', Array.isArray(r.words) && r.words.length === 2);
+
+  const left = (r.words || []).find(x => x.text === 'TUNA');
+  ok('a word on the left margin is at x 0, not missing', left && left.x === 0);
+  ok('its centre is between its edges',                  left && left.y === 110);
+  ok('and its height is measured',                       left && left.h === 20);
+}
+{
+  /* An adapter that returns no positions must say so rather than hand
+     back an empty list that looks like a page with no words on it. */
+  stub(() => res(200, { responses: [{ fullTextAnnotation: { text: 'TUNA 4.29' } }] }));
+  const r = await call();
+  ok('no annotations means no words', r.words === null);
+  ok('but the text still arrives',    r.text === 'TUNA 4.29');
+}
+
 console.log('\n--- the fake adapter is untouched ---');
 {
   const t = await ocr(img);
-  ok('still returns the fixture offline', t.includes('WHOLE FOODS MARKET'));
+  ok('still returns the fixture offline', t.text.includes('WHOLE FOODS MARKET'));
+  ok('and admits it cannot place a word', t.words === null);
 }
 
 globalThis.fetch = real;

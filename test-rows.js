@@ -1,0 +1,122 @@
+/* Reading order.
+ *
+ * Vision segments a receipt into columns and returns its text in that
+ * order — every description, then every price. Read as lines, an item and
+ * its price are never on the same line, so nothing downstream can work.
+ * These build words in that order and check rows come back out.
+ */
+import { linesFromWords, parseReceipt } from './receipt-parse.js';
+
+let failures = 0;
+const ok = (name, cond) => { if (!cond) failures++; console.log((cond ? 'ok   ' : 'FAIL ') + name); };
+const eq = (name, got, want) =>
+  ok(name + (JSON.stringify(got) === JSON.stringify(want) ? '' : '  got ' + JSON.stringify(got)),
+     JSON.stringify(got) === JSON.stringify(want));
+
+/* A word as Vision would place it. h defaults to a normal line height. */
+const w = (text, x, y, h = 20) => ({ text, x, y, h });
+
+console.log('\n--- rows out of columns ---');
+{
+  /* The left column, then the right column: the order Vision returns,
+     and the reason a price never met its item. */
+  const words = [
+    w('WHOLE', 10, 40), w('FOODS', 90, 40), w('MARKET', 175, 40),
+    w('TUNA', 10, 140), w('CHNK', 75, 140), w('142G', 145, 140),
+    w('WHEY', 10, 180), w('ISO', 80, 180),  w('900G', 130, 180),
+    w('TOTAL', 10, 260),
+    w('4.29', 420, 140),
+    w('44.99', 415, 180),
+    w('51.97', 415, 260),
+  ];
+
+  const rows = linesFromWords(words);
+  eq('the item meets its price', rows[1], 'TUNA CHNK 142G 4.29');
+  eq('and so does the next',     rows[2], 'WHEY ISO 900G 44.99');
+  eq('the header survives',      rows[0], 'WHOLE FOODS MARKET');
+  eq('and the total',            rows[3], 'TOTAL 51.97');
+  ok('four rows, not thirteen fragments', rows.length === 4);
+}
+
+console.log('\n--- the shapes a photograph arrives in ---');
+{
+  /* A page is never quite square to the camera, so a row's words drift a
+     few pixels apart vertically. */
+  const skewed = [w('TUNA', 10, 138), w('CHNK', 75, 141), w('4.29', 420, 145)];
+  eq('a few pixels of skew is still one row',
+     linesFromWords(skewed), ['TUNA CHNK 4.29']);
+
+  /* Two rows a full line apart must not merge. */
+  const close = [w('TUNA', 10, 140), w('4.29', 420, 140),
+                 w('WHEY', 10, 168), w('44.99', 415, 168)];
+  ok('rows a line apart stay apart', linesFromWords(close).length === 2);
+
+  /* Order within a row comes from x, not from the order they arrived. */
+  eq('words are read left to right',
+     linesFromWords([w('4.29', 420, 100), w('CHNK', 75, 100), w('TUNA', 10, 100)]),
+     ['TUNA CHNK 4.29']);
+
+  /* Photographed closer, everything is bigger — including the gaps. The
+     scale comes from the text, so the same receipt reads the same. */
+  const big = [w('TUNA', 20, 280, 40), w('CHNK', 150, 286, 40), w('4.29', 840, 292, 40),
+               w('WHEY', 20, 336, 40), w('44.99', 830, 340, 40)];
+  ok('a closer photograph reads the same', linesFromWords(big).length === 2);
+}
+
+console.log('\n--- nothing to go on ---');
+{
+  eq('no words is no rows',      linesFromWords([]), []);
+  eq('null is no rows',          linesFromWords(null), []);
+  eq('a word with no position is skipped',
+     linesFromWords([{ text: 'X' }, w('TUNA', 10, 100)]), ['TUNA']);
+
+  /* Vision omits zero coordinates rather than sending them, so a word
+     against the left edge legitimately has x of 0. It is a position, not
+     a missing one. */
+  eq('x of zero is a position, not an absence',
+     linesFromWords([w('4.29', 420, 100), w('TUNA', 0, 100)]), ['TUNA 4.29']);
+}
+
+console.log('\n--- what the parser then makes of it ---');
+{
+  const words = [
+    w('WHOLE', 10, 40), w('FOODS', 90, 40), w('MARKET', 175, 40),
+    w('08/30/2026', 10, 80), w('02:14', 150, 80), w('PM', 210, 80),
+    w('TRANSACTION', 10, 110), w('#', 130, 110), w('4471-8823-0091', 155, 110),
+    w('TUNA', 10, 140), w('CHNK', 75, 140), w('LIGHT', 145, 140), w('142G', 215, 140),
+    w('WHEY', 10, 180), w('ISO', 80, 180), w('CHOC', 130, 180), w('900G', 200, 180),
+    w('SUBTOTAL', 10, 240),
+    w('TOTAL', 10, 280),
+    w('4.29', 420, 140), w('44.99', 415, 180), w('49.28', 415, 240), w('51.97', 415, 280),
+  ];
+
+  const p = parseReceipt({ text: 'ignored — the words are what matter', words });
+
+  ok('it says it rebuilt them',     p.reconstructed === true);
+  eq('the store',                   p.store, 'WHOLE FOODS MARKET');
+  eq('the total, not the subtotal', p.total_cents, 5197);
+  /* Hyphens are stripped on purpose, so the same id printed two ways
+     still hashes to one receipt. */
+  eq('the transaction id, normalised', p.txn, '447188230091');
+  ok('the date',                    !!p.purchased &&
+                                    new Date(p.purchased).getUTCFullYear() === 2026 &&
+                                    new Date(p.purchased).getUTCMonth() === 7);
+
+  eq('two items, each with its price',
+     p.lines.map(l => l.text + '|' + l.cents),
+     ['TUNA CHNK LIGHT 142G|429', 'WHEY ISO CHOC 900G|4499']);
+}
+
+console.log('\n--- text on its own still works ---');
+{
+  /* The fixture, the old tests, and any adapter that cannot say where a
+     word was. */
+  const p = parseReceipt('WHOLE FOODS MARKET\nTUNA CHNK 142G   4.29\nTOTAL   4.29');
+  ok('falls back to the line breaks', p.reconstructed === false);
+  eq('and still reads the item', p.lines.map(l => l.text), ['TUNA CHNK 142G']);
+  eq('the raw text is kept as it came',
+     p.raw.split('\n')[0], 'WHOLE FOODS MARKET');
+}
+
+console.log(failures ? `\n${failures} FAILED` : '\nall passed');
+process.exit(failures ? 1 : 0);

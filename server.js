@@ -177,8 +177,8 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'no image' });
 
-    const text   = await ocr(req.file.buffer);
-    const parsed = parseReceipt(text);
+    const read   = await ocr(req.file.buffer);
+    const parsed = parseReceipt(read);
     const img    = imageHash(req.file.buffer);
 
     /* Without a transaction id the receipt cannot be identified by what
@@ -232,6 +232,8 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
          that failed to match are all indistinguishable from each other:
          the parse can only be argued with if what it parsed is visible. */
       raw: parsed.raw,
+      rows: parsed.rows,
+      reconstructed: parsed.reconstructed,
       dropped: parsed.dropped,
 
       matches,
