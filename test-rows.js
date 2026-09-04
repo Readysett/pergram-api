@@ -77,6 +77,65 @@ console.log('\n--- nothing to go on ---');
      linesFromWords([w('4.29', 420, 100), w('TUNA', 0, 100)]), ['TUNA 4.29']);
 }
 
+console.log('\n--- a gap, and what is on the far side of it ---');
+{
+  /* Same word, same distance, two different meanings. These two cases
+     are the whole problem: the gap is identical and only what follows it
+     says whether the row continues or a new one starts. */
+  const wx = (text, x, x2, y = 100, h = 20) => ({ text, x, x2, y, h });
+
+  /* One product, its price a long way to the right, and the tax flag
+     after it. Distance here is the layout of a receipt. */
+  eq('a price far to the right stays on its row',
+     linesFromWords([
+       wx('BARILLA', 10, 90), wx('PLUS', 100, 150), wx('PROTEIN', 160, 260),
+       wx('2.99', 600, 650), wx('F', 660, 670),
+     ]),
+     ['BARILLA PLUS PROTEIN 2.99 F']);
+
+  /* Two products printed side by side. Identical geometry, and joining
+     them invents a line that was never on the receipt. */
+  eq('a second column of items does not',
+     linesFromWords([
+       wx('BARILLA', 10, 90), wx('PLUS', 100, 150),
+       wx('PROTEIN', 600, 700), wx('$2.99', 720, 780), wx('F', 790, 800),
+     ]),
+     ['BARILLA PLUS', 'PROTEIN $2.99 F']);
+
+  /* Ordinary word spacing is not a gutter. */
+  eq('words a space apart stay together',
+     linesFromWords([
+       wx('CHUNK', 10, 80), wx('LIGHT', 90, 160), wx('TUNA', 170, 240),
+     ]),
+     ['CHUNK LIGHT TUNA']);
+
+  /* A dollar sign detached from its amount is still part of the price. */
+  eq('a lone dollar sign is not a boundary',
+     linesFromWords([
+       wx('MILK', 10, 70), wx('$', 600, 612), wx('3.49', 618, 668),
+     ]),
+     ['MILK $ 3.49']);
+
+  /* Without a right edge there is no measurable gap, so nothing is cut.
+     That is the behaviour every word had before this, and the fixture
+     and older tests still rely on it. */
+  eq('no right edge means no cutting',
+     linesFromWords([
+       { text:'BARILLA', x:10, y:100, h:20 },
+       { text:'PROTEIN', x:600, y:100, h:20 },
+     ]),
+     ['BARILLA PROTEIN']);
+
+  /* The threshold is in heights of the text, so the same receipt
+     photographed closer splits in the same places. */
+  eq('a closer photograph splits the same way',
+     linesFromWords([
+       wx('BARILLA', 20, 180, 200, 40), wx('PLUS', 200, 300, 200, 40),
+       wx('PROTEIN', 1200, 1400, 200, 40), wx('$2.99', 1440, 1560, 200, 40),
+     ]),
+     ['BARILLA PLUS', 'PROTEIN $2.99']);
+}
+
 console.log('\n--- what the parser then makes of it ---');
 {
   const words = [

@@ -232,6 +232,12 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
          that failed to match are all indistinguishable from each other:
          the parse can only be argued with if what it parsed is visible. */
       raw: parsed.raw,
+
+      /* TEMPORARY, with the panel that shows it: where every word was.
+         Whether a row was joined correctly is a question about geometry,
+         and it cannot be answered from the text the geometry produced. */
+      words: read.words || null,
+
       rows: parsed.rows,
       reconstructed: parsed.reconstructed,
       dropped: parsed.dropped,

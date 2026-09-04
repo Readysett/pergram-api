@@ -129,6 +129,10 @@ function wordBoxes(annotations){
     out.push({
       text: a.description,
       x: Math.min(...xs),
+      /* The right edge as well as the left. A gap between two words is
+         the distance from where one ends to where the next begins, and
+         with only left edges that distance cannot be measured at all. */
+      x2: Math.max(...xs),
       /* The centre, not the top edge: a photograph is never quite square
          to the page, and a tall word beside a short one shares a centre
          long before it shares an edge. */

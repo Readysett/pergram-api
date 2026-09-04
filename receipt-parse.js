@@ -33,6 +33,44 @@ const NOT_A_PRODUCT = /^(subtotal|sub total|total|tax|balance|change|cash|visa|m
  * fixed pixel count, because the same receipt photographed closer is the
  * same receipt with bigger numbers.
  */
+/* A price and a second column of items both sit far to the right of the
+   text beside them, so distance alone cannot tell them apart. What
+   separates them is what they contain: a price column holds amounts and
+   the single-letter tax flags that trail them, and nothing else. */
+const PRICEISH = /^(\$?\d{1,4}[.,]\d{2}|\$|[A-Z]|\*)$/;
+
+/* How much blank space stops being a wide column and starts being a
+   boundary, measured in heights of the text itself. Generous on purpose:
+   the rule below only ever splits before a word that is not part of a
+   price, so it costs nothing to let real prices sit a long way out. */
+const GUTTER_HEIGHTS = 5;
+
+/* One row's words, left to right, cut wherever the blank space between
+   two of them is too wide to be spacing and what follows is not a price.
+ *
+ * "BARILLA PLUS" and "PROTEIN BAR" printed side by side share a line and
+ * are two products; joined, they become one product that was never sold.
+ * "BARILLA PLUS PROTEIN" and "2.99" also share a line, are equally far
+ * apart, and are one product and its price. The gap says nothing. What
+ * comes after it says everything. */
+function splitAtGutters(words, unit){
+  const maxGap = unit * GUTTER_HEIGHTS;
+  const groups = [[words[0]]];
+
+  for (let i = 1; i < words.length; i++){
+    const prev = words[i - 1], w = words[i];
+
+    /* Without a right edge the gap is unmeasurable, so nothing is cut —
+       the old behaviour, which joined everything on the row. */
+    const gap = Number.isFinite(prev.x2) ? w.x - prev.x2 : 0;
+
+    if (gap > maxGap && !PRICEISH.test(w.text)) groups.push([w]);
+    else groups[groups.length - 1].push(w);
+  }
+
+  return groups.map(g => g.map(x => x.text).join(' ').trim()).filter(Boolean);
+}
+
 export function linesFromWords(words, { tolerance = 0.6 } = {}){
   const ws = (words || []).filter(w =>
     w && w.text && Number.isFinite(w.x) && Number.isFinite(w.y));
@@ -59,7 +97,7 @@ export function linesFromWords(words, { tolerance = 0.6 } = {}){
 
   return rows
     .sort((a, b) => a.y - b.y)
-    .map(r => r.words.slice().sort((a, b) => a.x - b.x).map(w => w.text).join(' ').trim())
+    .flatMap(r => splitAtGutters(r.words.slice().sort((a, b) => a.x - b.x), unit))
     .filter(Boolean);
 }
 
