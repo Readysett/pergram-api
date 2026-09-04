@@ -177,7 +177,7 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'no image' });
 
-    const read   = await ocr(req.file.buffer);
+    const read   = await ocr(req.file.buffer, { mimeType: req.file.mimetype });
     const parsed = parseReceipt(read);
     const img    = imageHash(req.file.buffer);
 
@@ -240,6 +240,7 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
 
       rows: parsed.rows,
       reconstructed: parsed.reconstructed,
+      source: parsed.source,
       geometry: parsed.geometry,
       dropped: parsed.dropped,
 

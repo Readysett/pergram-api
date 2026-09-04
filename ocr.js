@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { documentAi } from './docai.js';
 
 /* OCR is a swappable adapter, chosen by OCR_PROVIDER:
  *
@@ -161,11 +162,21 @@ function wordBoxes(annotations){
   return out;
 }
 
-/* Returns { text, words }. words is null when the provider cannot say
-   where anything was — the fixture, for one — and the caller then has
-   nothing to reconstruct from and falls back to the text's own line
-   breaks. */
-export async function ocr(buf, { provider = process.env.OCR_PROVIDER || 'fake' } = {}){
+/* What a provider gives back, in rising order of how much it has already
+   done:
+ *
+ *   text            the characters, in whatever order it read them
+ *   words           and where each one was, to rebuild the rows from
+ *   parsed          the supplier, date, total and line items as fields
+ *
+ * Anything that returns `parsed` has done the page layout itself, and
+ * the reading-order machinery downstream is skipped entirely.
+ */
+export async function ocr(buf, { provider = process.env.OCR_PROVIDER || 'fake', mimeType } = {}){
+  if (provider === 'docai'){
+    const parsed = await documentAi(buf, { mimeType });
+    return { text: parsed.text, words: null, parsed };
+  }
   if (provider === 'google')   return googleVision(buf);
   if (provider === 'textract') throw new Error('textract adapter not written yet');
   return { text: FIXTURES.default, words: null };   // fake

@@ -270,8 +270,43 @@ export function linesFromWords(words){
  * falls back to the text's own line breaks, which is all the fixture and
  * the older tests ever had.
  */
+/* A receipt already read by a processor that does page layout for a
+ * living. The fields arrive as fields, so none of the reading-order work
+ * below runs: no rows to rebuild, no gutters to find, no page to
+ * straighten. The line items are mapped into the same shape the text path
+ * produces, so everything downstream of here is unchanged.
+ */
+function fromParsed(p){
+  const raw   = String(p.text || '');
+  const items = (p.items || []).filter(i => i && i.text);
+
+  return {
+    store:       p.store || null,
+    purchased:   p.purchased || null,
+    total_cents: p.total_cents == null ? null : p.total_cents,
+
+    /* The one field the Expense Parser does not return, and receipt
+       identity turns on it: without a transaction id a receipt can only
+       be told apart by its pixels, which a second photograph defeats. It
+       is in the text, so it is read from there. */
+    txn: findTxn(raw),
+
+    lines:   items.map(i => ({ text: i.text, cents: i.cents, qty: i.qty })),
+    dropped: [],
+    rows:    items.map(i =>
+               i.text + (i.cents == null ? '' : '   ' + (i.cents / 100).toFixed(2))),
+
+    reconstructed: false,
+    source:        'document-ai',
+    geometry:      null,
+    raw,
+  };
+}
+
 export function parseReceipt(input){
   const src = typeof input === 'string' ? { text: input, words: null } : (input || {});
+  if (src.parsed) return fromParsed(src.parsed);
+
   const raw = String(src.text || '');
 
   const built   = buildRows(src.words);
@@ -299,6 +334,7 @@ export function parseReceipt(input){
        the answer comes out wrong. */
     rows:          lines,
     reconstructed: rebuilt.length > 0,
+    source:        rebuilt.length ? 'word-geometry' : 'text-lines',
 
     /* What the grouping measured. A wrong row is either a wrong pitch or
        a wrong rule applied to a right one, and those want looking at in
