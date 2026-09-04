@@ -225,6 +225,15 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
         image_hash: img,
       },
       lines: parsed.lines,
+
+      /* The text as it was read, and every line that did not survive
+         extraction. This is the caller's own receipt being handed back to
+         them, and without it a wrong date, a missed total or a product
+         that failed to match are all indistinguishable from each other:
+         the parse can only be argued with if what it parsed is visible. */
+      raw: parsed.raw,
+      dropped: parsed.dropped,
+
       matches,
       note: 'Nothing has been claimed. Confirm the matches, then POST /api/claim.',
     });

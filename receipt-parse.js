@@ -24,12 +24,15 @@ export function parseReceipt(text){
   const raw   = String(text || '');
   const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
 
+  const found = findItems(lines);
+
   return {
     store:       findStore(lines),
     purchased:   findDate(raw),
     total_cents: findTotal(lines),
     txn:         findTxn(raw),
-    lines:       findItems(lines),
+    lines:       found.items,
+    dropped:     found.dropped,
     raw:         raw,
   };
 }
@@ -95,21 +98,39 @@ function findTxn(raw){
   return null;
 }
 
+/* Returns the item lines, and separately every line that was considered
+   and rejected, with the reason.
+ *
+ * The rejects matter as much as the items. When a product on the receipt
+ * does not match, the first question is whether the line reached the
+ * matcher at all — and a line dropped here never does. Without this the
+ * answer is invisible and the search starts in the wrong place. */
 function findItems(lines){
-  const out = [];
+  const items   = [];
+  const dropped = [];
+
   for (const l of lines){
-    if (NOT_A_PRODUCT.test(l)) continue;
+    if (NOT_A_PRODUCT.test(l)){
+      dropped.push({ text: l, why: 'reads as a total, tax or payment line' });
+      continue;
+    }
     const m = l.match(MONEY);
-    if (!m) continue;
+    if (!m){
+      dropped.push({ text: l, why: 'no price on the line' });
+      continue;
+    }
     const desc = l.slice(0, l.length - m[0].length).trim();
-    if (desc.length < 3) continue;
-    out.push({
+    if (desc.length < 3){
+      dropped.push({ text: l, why: 'nothing left once the price was removed' });
+      continue;
+    }
+    items.push({
       text: desc,
       cents: Math.round(parseFloat(m[1].replace(',', '.')) * 100),
       qty: extractCount(l),          // null when the receipt does not say
     });
   }
-  return out;
+  return { items, dropped };
 }
 
 /* ---------- matching a scanned product to a receipt line ---------- */
