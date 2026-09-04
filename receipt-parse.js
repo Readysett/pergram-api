@@ -126,6 +126,47 @@ const median = ns => {
  * are either jitter within a line or a step to the next one. The typical
  * step is the line pitch, and half of it separates the two.
  */
+/* Beyond this a photograph is not skewed, it is a different problem, and
+   a rotation estimated from a page that far over is more likely to be a
+   misreading than a measurement. About twenty degrees. */
+const MAX_SKEW = 0.35;
+
+/* The angle the page is lying at.
+ *
+ * Every word carries the direction its own text runs in, so the page's
+ * rotation is the middle of them. A median rather than a mean: a word
+ * read sideways out of a logo would drag an average round on its own.
+ * Short words are dropped first — two or three characters give an angle
+ * that is mostly noise. */
+function pageAngle(ws){
+  const angled = ws.filter(w => Number.isFinite(w.angle));
+  if (!angled.length) return 0;
+
+  const wide = angled.filter(w => Number.isFinite(w.x2) && (w.x2 - w.x) >= 20);
+  const from = wide.length >= 5 ? wide : angled;
+
+  const a = median(from.map(w => w.angle));
+  return Math.abs(a) < MAX_SKEW ? a : 0;
+}
+
+/* Turn the page back flat.
+ *
+ * Until this happens the rows are not separable by any rule at all: tilt
+ * a receipt far enough and a word at the right-hand end of one row sits
+ * lower in the image than a word at the left-hand end of the next, so the
+ * rows interleave in the picture itself. No amount of grouping recovers
+ * an order the coordinates no longer hold. */
+function straighten(ws, angle){
+  if (!angle) return ws;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return ws.map(w => ({
+    ...w,
+    x:  w.x * cos + w.y * sin,
+    x2: Number.isFinite(w.x2) ? w.x2 * cos + w.y * sin : w.x2,
+    y:  w.y * cos - w.x * sin,
+  }));
+}
+
 /* How far left a word has to appear before it is the start of a new row,
    in heights of the text. */
 const X_RESET_HEIGHTS = 2;
@@ -157,11 +198,14 @@ function buildRows(words){
   const ws = (words || []).filter(w =>
     w && w.text && Number.isFinite(w.x) && Number.isFinite(w.y));
   if (!ws.length){
-    return { rows: [], unit: 0, pitch: 0, jitter: 0, reset: 0, separated: false };
+    return { rows: [], unit: 0, pitch: 0, jitter: 0, reset: 0, separated: false, angle: 0 };
   }
 
   const unit   = median(ws.map(w => w.h).filter(h => h > 0)) || 10;
-  const sorted = ws.slice().sort((a, b) => a.y - b.y);
+
+  const angle  = pageAngle(ws);
+  const flat   = straighten(ws, angle);
+  const sorted = flat.slice().sort((a, b) => a.y - b.y);
 
   /* Kept for the diagnostic and no longer used to decide anything. When
      these two come out close together it is the reason the vertical
@@ -170,6 +214,14 @@ function buildRows(words){
   for (let i = 1; i < sorted.length; i++) steps.push(sorted[i].y - sorted[i - 1].y);
   const c = twoClusters(steps);
   const separated = !!c && (c.hi - c.lo) >= unit * 0.2;
+
+  /* The middle of the upper group, not its average. A receipt ends in a
+     logo and a barcode with large blank space around them, and those gaps
+     are steps too — a handful of them at over a hundred pixels drags an
+     average clear of the line spacing that every item on the receipt
+     shares. The middle ignores them. */
+  const above = separated ? steps.filter(v => v > c.boundary) : [];
+  const pitch = above.length ? median(above) : 0;
 
   const xs     = sorted.map(w => w.x);
   const left   = Math.min(...xs);
@@ -199,10 +251,11 @@ function buildRows(words){
     rows: rows.flatMap(r => splitAtGutters(r.slice().sort((a, b) => a.x - b.x), unit))
               .filter(Boolean),
     unit,
-    pitch:  c ? c.hi : 0,
+    pitch,
     jitter: c ? c.lo : 0,
     reset,
     separated,
+    angle,
   };
 }
 
@@ -255,6 +308,7 @@ export function parseReceipt(input){
       row_jitter:   built.jitter,
       line_pitch:   built.pitch,
       x_reset_over: built.reset,
+      skew_degrees: built.angle * 180 / Math.PI,
       /* Whether the vertical signal could have been used at all. It is
          not used either way; when this is false it is the evidence for
          why. */

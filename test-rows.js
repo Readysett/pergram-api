@@ -135,6 +135,51 @@ console.log('\n--- lines closer together than the text is tall ---');
      ['CHUNK LIGHT TUNA', 'WHOLE MILK']);
 }
 
+console.log('\n--- a page held at an angle ---');
+{
+  /* The receipt is tilted, so a word further right sits further down the
+     image even on the same printed line. Tilt it far enough and the rows
+     interleave in the picture itself: below, the price of the first row
+     falls between two words of the second. Sorted by y they arrive
+     shuffled, and no rule applied to those coordinates can unshuffle
+     them — the order is not in them any more.
+   *
+   * Every word carries the direction its own text runs in, so the tilt
+   * is measurable and can be taken back out first. */
+  const SLOPE = 0.05;                      // about three degrees
+  const ANGLE = Math.atan(SLOPE);
+  const sk = (text, x, x2, baseline) => ({
+    text, x, x2, h: 20, angle: ANGLE,
+    y: baseline + SLOPE * x,               // where the tilt puts it
+  });
+
+  const words = [
+    sk('BAREBELLS', 10, 150, 100), sk('PROTEIN', 160, 300, 100), sk('3.49', 600, 660, 100),
+    sk('BARILLA',   10, 140, 124), sk('PENNE',   150, 260, 124), sk('4.99', 600, 660, 124),
+  ];
+
+  /* The shuffling is real: sorted by the y they actually have, a word of
+     the first row lands between two of the second. */
+  const order = words.slice().sort((a, b) => a.y - b.y).map(w => w.text);
+  ok('the rows do interleave in the image',
+     order.indexOf('3.49') > order.indexOf('BARILLA') &&
+     order.indexOf('3.49') < order.indexOf('PENNE'));
+
+  eq('and come apart once the page is straightened',
+     linesFromWords(words),
+     ['BAREBELLS PROTEIN 3.49', 'BARILLA PENNE 4.99']);
+
+  const p = parseReceipt({ text: '', words });
+  ok('the tilt is reported in degrees',
+     Math.abs(p.geometry.skew_degrees - 2.86) < 0.2);
+
+  /* Words that cannot say which way they run are left alone rather than
+     turned by a guess. */
+  eq('no angle means no rotation',
+     parseReceipt({ text: '', words: words.map(({ angle, ...w }) => w) }).geometry.skew_degrees,
+     0);
+}
+
 console.log('\n--- when the vertical signal carries nothing at all ---');
 {
   /* Taken from a real shot: text 20 high, words within a row spread over

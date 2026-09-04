@@ -126,8 +126,26 @@ function wordBoxes(annotations){
     const ys = vs.map(v => (v && v.y) || 0);
     const top = Math.min(...ys), bottom = Math.max(...ys);
 
+    /* The corners come round the word in order, so the step from the
+       first to the second runs along the text. On a page photographed
+       square that is horizontal; on one held at an angle it is not, and
+       the angle is the page's rotation. Collapsing the quad to an
+       upright box throws that away — and it is the only thing that says
+       which row a word is on once the rows overlap. */
+    const [v0, v1, , v3] = vs;
+    const dx = ((v1 && v1.x) || 0) - ((v0 && v0.x) || 0);
+    const dy = ((v1 && v1.y) || 0) - ((v0 && v0.y) || 0);
+
+    /* Down the left edge is the height of the text itself, which stays
+       right however the page is turned. The upright box does not: turn a
+       word and its box grows taller than the letters in it. */
+    const ex = ((v3 && v3.x) || 0) - ((v0 && v0.x) || 0);
+    const ey = ((v3 && v3.y) || 0) - ((v0 && v0.y) || 0);
+    const side = Math.hypot(ex, ey);
+
     out.push({
       text: a.description,
+      angle: Math.hypot(dx, dy) > 0 ? Math.atan2(dy, dx) : 0,
       x: Math.min(...xs),
       /* The right edge as well as the left. A gap between two words is
          the distance from where one ends to where the next begins, and
@@ -137,7 +155,7 @@ function wordBoxes(annotations){
          to the page, and a tall word beside a short one shares a centre
          long before it shares an edge. */
       y: (top + bottom) / 2,
-      h: bottom - top,
+      h: side > 0 ? side : bottom - top,
     });
   }
   return out;
