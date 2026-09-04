@@ -77,6 +77,53 @@ console.log('\n--- nothing to go on ---');
      linesFromWords([w('4.29', 420, 100), w('TUNA', 0, 100)]), ['TUNA 4.29']);
 }
 
+console.log('\n--- lines closer together than the text is tall ---');
+{
+  /* Vision's boxes run from ascender to descender, and a receipt is set
+     tighter than that: text 30 high on a 16 pitch. Anything that decides
+     rows from the height reaches into the line above and the line below.
+     This is the case that collapsed three real lines into one. */
+  const t = (text, x, x2, y) => ({ text, x, x2, y, h: 30 });
+
+  eq('three tight lines stay three rows',
+     linesFromWords([
+       t('CHUNK', 10, 90, 100), t('TUNA', 100, 180, 100),
+       t('WHOLE', 10, 90, 116), t('MILK', 100, 180, 116),
+       t('BARILLA', 10, 90, 132), t('PLUS', 100, 180, 132),
+     ]),
+     ['CHUNK TUNA', 'WHOLE MILK', 'BARILLA PLUS']);
+
+  /* The symptom that gave it away: merge two lines and their words
+     interleave when sorted by x, so the gap between neighbours comes out
+     negative. Rows that are actually rows never do that. */
+  /* Prices on the right, so the gutter rule joins each row and this
+     measures the grouping alone rather than both rules at once. */
+  const rows = linesFromWords([
+    t('AAA', 10, 90, 100), t('1.99', 600, 680, 100),
+    t('CCC', 10, 90, 116), t('2.99', 600, 680, 116),
+  ]);
+  eq('and their words do not interleave', rows, ['AAA 1.99', 'CCC 2.99']);
+
+  /* A blank line is two pitches, and must still be a boundary rather than
+     setting the scale for everything else. */
+  eq('a blank line does not widen the rest',
+     linesFromWords([
+       t('ITEM', 10, 90, 100),
+       t('NEXT', 10, 90, 116),
+       t('AFTER', 10, 90, 148),
+     ]),
+     ['ITEM', 'NEXT', 'AFTER']);
+
+  /* A page photographed slightly askew: the words of one line do not
+     share a centre exactly, and that wobble is not a line break. */
+  eq('a wobble along a line is not a break',
+     linesFromWords([
+       t('CHUNK', 10, 90, 100), t('LIGHT', 100, 180, 102), t('TUNA', 190, 270, 104),
+       t('WHOLE', 10, 90, 116), t('MILK', 100, 180, 118),
+     ]),
+     ['CHUNK LIGHT TUNA', 'WHOLE MILK']);
+}
+
 console.log('\n--- a gap, and what is on the far side of it ---');
 {
   /* Same word, same distance, two different meanings. These two cases

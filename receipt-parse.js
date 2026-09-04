@@ -71,34 +71,76 @@ function splitAtGutters(words, unit){
   return groups.map(g => g.map(x => x.text).join(' ').trim()).filter(Boolean);
 }
 
-export function linesFromWords(words, { tolerance = 0.6 } = {}){
+const median = ns => {
+  const s = ns.slice().sort((a, b) => a - b);
+  return s.length ? s[Math.floor(s.length / 2)] : 0;
+};
+
+/* Group words into printed lines, and report how it decided.
+ *
+ * The height of the text does not tell you where the lines are. Vision's
+ * boxes run from ascender to descender, and receipts are set tight enough
+ * that the distance between one line and the next is routinely less than
+ * that — so a tolerance derived from height reaches into the line above
+ * and the line below, and rows swallow their neighbours. Worse, taking
+ * the running centre of a row as it grows drags that centre toward
+ * whatever it just absorbed, so one row walks down the receipt taking
+ * three real lines with it. Words from different lines then sort together
+ * by x, and the gaps between them come out negative — which is the shape
+ * the failure showed up in.
+ *
+ * What does tell you where the lines are is the spacing between them,
+ * and that is in the data: sort the centres, and the steps between them
+ * are either jitter within a line or a step to the next one. The typical
+ * step is the line pitch, and half of it separates the two.
+ */
+function buildRows(words, { split = 0.5 } = {}){
   const ws = (words || []).filter(w =>
     w && w.text && Number.isFinite(w.x) && Number.isFinite(w.y));
-  if (!ws.length) return [];
+  if (!ws.length) return { rows: [], unit: 0, pitch: 0, gap: 0 };
 
-  /* A median, not a mean: one enormous misread should not widen every
-     row on the receipt. */
-  const heights = ws.map(w => w.h).filter(h => h > 0).sort((a, b) => a - b);
-  const unit = heights.length ? heights[Math.floor(heights.length / 2)] : 10;
-  const tol  = unit * tolerance;
+  const unit = median(ws.map(w => w.h).filter(h => h > 0)) || 10;
 
-  const rows = [];
-  for (const w of [...ws].sort((a, b) => a.y - b.y)){
-    const row = rows.find(r => Math.abs(r.y - w.y) <= tol);
-    if (row){
-      row.words.push(w);
-      /* Track the row's centre as a running mean so it does not drift
-         toward whichever word happened to arrive first. */
-      row.y = (row.y * (row.words.length - 1) + w.y) / row.words.length;
-    } else {
-      rows.push({ y: w.y, words: [w] });
-    }
+  const sorted = ws.slice().sort((a, b) => a.y - b.y);
+
+  /* Steps between neighbouring centres. The ones near zero are words
+     sitting on the same line; the rest are the distance to the next. */
+  const steps = [];
+  for (let i = 1; i < sorted.length; i++){
+    const d = sorted[i].y - sorted[i - 1].y;
+    /* Below this it is jitter along one line, not a step to the next.
+       On a page photographed slightly askew the words of a single line
+       do not share a centre exactly. */
+    if (d > unit * 0.25) steps.push(d);
   }
 
-  return rows
-    .sort((a, b) => a.y - b.y)
-    .flatMap(r => splitAtGutters(r.words.slice().sort((a, b) => a.x - b.x), unit))
-    .filter(Boolean);
+  /* A low percentile, not the median. The steps are a mix: most cross one
+     line, but a blank line or a change of section crosses two or three,
+     and those pull a median upward until it sits above the ordinary line
+     spacing — at which point neighbouring lines stop being separated at
+     all. The common case is the smallest one, so look near the bottom. */
+  const ordered = steps.slice().sort((a, b) => a - b);
+  const pitch = ordered.length ? ordered[Math.floor(ordered.length * 0.25)] : 0;
+  const gap   = pitch ? pitch * split : Infinity;
+
+  const rows = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++){
+    /* Against the previous word, not against the row's running centre.
+       A centre that moves as the row grows is what let one row chain
+       across three lines. */
+    if (sorted[i].y - sorted[i - 1].y > gap) rows.push([sorted[i]]);
+    else rows[rows.length - 1].push(sorted[i]);
+  }
+
+  return {
+    rows: rows.flatMap(r => splitAtGutters(r.slice().sort((a, b) => a.x - b.x), unit))
+              .filter(Boolean),
+    unit, pitch, gap: pitch ? gap : 0,
+  };
+}
+
+export function linesFromWords(words, opts){
+  return buildRows(words, opts).rows;
 }
 
 /**
@@ -112,7 +154,8 @@ export function parseReceipt(input){
   const src = typeof input === 'string' ? { text: input, words: null } : (input || {});
   const raw = String(src.text || '');
 
-  const rebuilt = linesFromWords(src.words);
+  const built   = buildRows(src.words);
+  const rebuilt = built.rows;
   const lines   = rebuilt.length
     ? rebuilt
     : raw.split('\n').map(l => l.trim()).filter(Boolean);
@@ -136,6 +179,11 @@ export function parseReceipt(input){
        the answer comes out wrong. */
     rows:          lines,
     reconstructed: rebuilt.length > 0,
+
+    /* What the grouping measured. A wrong row is either a wrong pitch or
+       a wrong rule applied to a right one, and those want looking at in
+       different places. */
+    geometry: { text_height: built.unit, line_pitch: built.pitch, split_at: built.gap },
     raw:           raw,
   };
 }

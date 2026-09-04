@@ -240,6 +240,7 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
 
       rows: parsed.rows,
       reconstructed: parsed.reconstructed,
+      geometry: parsed.geometry,
       dropped: parsed.dropped,
 
       matches,
