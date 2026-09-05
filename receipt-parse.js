@@ -504,24 +504,100 @@ export function scoreLine(productName, lineText){
   return { score: hit / p.length, hits };
 }
 
+/* Above this share of the receipt's own lines, a word is not telling you
+   which line you are on.
+ *
+ * A third is deliberately generous. The failure being closed is a match
+ * carried entirely by words like PROT and BARS, which run through half a
+ * protein aisle; a word on a third of the lines is already useless for
+ * picking one of them out. */
+const GENERIC_SHARE = 0.34;
+
+/**
+ * How often each word appears across the receipt's own line items.
+ *
+ * The receipt is its own dictionary, which is the point: GATORADE picks
+ * out a line in a grocery shop and picks out nothing in a sports shop,
+ * and PROTEIN is distinctive in a hardware store. No fixed list of stop
+ * words knows that; the receipt in hand does.
+ *
+ * Counted over the LINE tokens rather than over what the product matched
+ * into them, and the difference is not academic. BARS is a subsequence of
+ * BAREBELLS, so the abbreviation rule scores them as a hit — count that
+ * way and BAREBELLS looks like it appears on every line carrying BARS,
+ * and the one distinctive word on the receipt is written off as generic.
+ * What is being measured is how common a word is on this receipt, which
+ * is a fact about the receipt alone.
+ */
+function lineVocabulary(lineTokens){
+  const df = new Map();
+  for (const line of lineTokens){
+    for (const t of new Set(line)) df.set(t, (df.get(t) || 0) + 1);
+  }
+  return df;
+}
+
 /**
  * Find the receipt line for a product the user has already scanned.
- * Returns null rather than a weak guess — a wrong match pays for
- * something that was not bought.
+ *
+ * Returns null rather than a weak guess. A wrong match credits a purchase
+ * from another product's line, which is the exact thing a receipt is
+ * meant to prevent — and it does it while looking confident, because two
+ * generic words agreeing is a perfectly good score.
+ *
+ * So a line only qualifies if at least one word the product matched on it
+ * is distinctive ON THIS RECEIPT. A protein bar sharing PROT and BARS
+ * with a sports drink scores 0.51 and means nothing; sharing BAREBELLS
+ * with one line means everything. Where no line has a distinctive word in
+ * common, there is no match — underpaying is the right direction to fail,
+ * and the shopper can still be shown what was read and correct it.
  */
-export function matchProduct(productName, lines, { min = 0.25, minHits = 2 } = {}){
-  /* Two independent conditions. The score alone is fragile — a long
-     product name with one accidental hit could clear a low threshold —
-     so a match must also land on at least two distinct tokens. On real
-     receipts, true matches score 0.30+ with 2 hits and false ones score
-     0.00 with none, so this is set from evidence rather than taste. */
-  let best = null, bestScore = 0, bestHits = 0;
-  for (const line of lines){
-    const { score, hits } = scoreLine(productName, line.text);
-    if (score > bestScore){ bestScore = score; bestHits = hits; best = line; }
+export function matchProduct(productName, lines, { min = 0.25, minHits = 1 } = {}){
+  const p = tokens(productName);
+  if (!p.length || !lines || !lines.length) return null;
+
+  const lineTokens = lines.map((line) => tokens(line.text));
+  const df = lineVocabulary(lineTokens);
+  const n = lines.length;
+  const distinctive = (t) => (df.get(t) || 0) / n <= GENERIC_SHARE;
+
+  let best = null;
+  for (let i = 0; i < n; i++){
+    let sum = 0, hits = 0, distinct = 0;
+
+    for (const pt of p){
+      /* The line's own word that this product word matched best. Its
+         commonness is what decides whether the match means anything. */
+      let b = 0, on = null;
+      for (const lt of lineTokens[i]){
+        const h = tokenHit(pt, lt);
+        if (h > b){ b = h; on = lt; }
+      }
+      sum += b;
+      if (b >= 0.7){
+        hits++;
+        if (on && distinctive(on)) distinct++;
+      }
+    }
+
+    /* Lines carrying only generic agreement are not candidates at all,
+       rather than candidates that lose on score — otherwise the wrong
+       line can win the comparison and take the right one down with it. */
+    if (!distinct) continue;
+
+    const score = sum / p.length;
+    if (!best || score > best.score) best = { line: lines[i], score, hits, distinct };
   }
-  if (!best || bestScore < min || bestHits < minHits) return null;
-  return { ...best, score: Number(bestScore.toFixed(2)), hits: bestHits };
+
+  if (!best || best.score < min || best.hits < minHits) return null;
+
+  return {
+    ...best.line,
+    score: Number(best.score.toFixed(2)),
+    hits: best.hits,
+    /* How much of the match was carried by words that mean something. */
+    distinct: best.distinct,
+  };
 }
 
 /* Weight units seen in package descriptions. Volume is converted as if it

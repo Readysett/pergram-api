@@ -33,6 +33,6 @@ console.log('  subtotal not total  ', parseReceipt('SUBTOTAL 51.59\nTOTAL 51.97'
 console.log('  card line ignored   ', parseReceipt('VISA 4417  51.97').lines.length === 0 ? 'ok' : 'FAIL');
 console.log('  weak match refused  ', matchProduct('Bananas', [{text:'WHEY ISO CHOC 900G'}]) === null ? 'ok' : 'FAIL');
 console.log('  one-token no match  ', matchProduct('Organic Whey Free Range Grass Fed Vanilla Powder Large',
-    [{text:'WHEY ISO CHOC 900G'}]) ? 'matched (check)' : 'ok — one hit is not enough');
+    [{text:'WHEY ISO CHOC 900G'}]) ? 'matched (check)' : 'ok — one line cannot make a word distinctive');
 console.log('  right line of many  ', (()=>{const m=matchProduct('Mild Cheddar Cheese Fancy Shredded', r.lines); return m && /CHDR/.test(m.text) ? 'ok' : 'FAIL';})());
 console.log('  oz to grams         ', extractGrams('CHDR SHRD 8OZ') === 227 ? 'ok' : 'FAIL (' + extractGrams('CHDR SHRD 8OZ') + ')');
