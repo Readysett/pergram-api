@@ -285,11 +285,12 @@ function fromParsed(p){
     purchased:   p.purchased || null,
     total_cents: p.total_cents == null ? null : p.total_cents,
 
-    /* The one field the Expense Parser does not return, and receipt
-       identity turns on it: without a transaction id a receipt can only
-       be told apart by its pixels, which a second photograph defeats. It
-       is in the text, so it is read from there. */
-    txn: findTxn(raw),
+    /* Receipt identity turns on this: without a transaction id a receipt
+       can only be told apart by its pixels, which a second photograph
+       defeats. Textract labels it as a field of its own, so take what the
+       provider extracted; Document AI does not return one at all, and
+       there the text is the only place left to look. */
+    txn: p.txn || findTxn(raw),
 
     lines:   items.map(i => ({ text: i.text, cents: i.cents, qty: i.qty })),
     dropped: [],
@@ -297,7 +298,11 @@ function fromParsed(p){
                i.text + (i.cents == null ? '' : '   ' + (i.cents / 100).toFixed(2))),
 
     reconstructed: false,
-    source:        'document-ai',
+    /* Which provider read it. Hardcoding one was fine with a single
+       structured adapter and became a lie with the second: a Textract
+       read reported itself as Document AI, in the one field anyone
+       diagnosing a bad parse reads first. */
+    source:        p.source || 'parsed',
     geometry:      null,
     raw,
   };

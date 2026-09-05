@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { documentAi } from './docai.js';
+import { analyzeExpense } from './textract.js';
 
 /* OCR is a swappable adapter, chosen by OCR_PROVIDER:
  *
@@ -177,7 +178,10 @@ export async function ocr(buf, { provider = process.env.OCR_PROVIDER || 'fake', 
     const parsed = await documentAi(buf, { mimeType });
     return { text: parsed.text, words: null, parsed };
   }
+  if (provider === 'textract'){
+    const parsed = await analyzeExpense(buf);
+    return { text: parsed.text, words: null, parsed };
+  }
   if (provider === 'google')   return googleVision(buf);
-  if (provider === 'textract') throw new Error('textract adapter not written yet');
   return { text: FIXTURES.default, words: null };   // fake
 }

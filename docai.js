@@ -147,6 +147,7 @@ export function readExpense(doc){
   const currency = first(ents, 'currency');
 
   return {
+    source:      "document-ai",
     store:       (supplier && supplier.mentionText) || null,
     purchased:   dateMs(when),
     total_cents: moneyCents(total),

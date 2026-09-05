@@ -64,7 +64,7 @@ console.log('\n--- reading the fields back ---');
 console.log('\n--- and what the parser makes of them ---');
 {
   const p = parseReceipt({ parsed: readExpense(doc) });
-  eq('it says where this came from', p.source, 'document-ai');
+  eq('it says which provider read it', p.source, 'document-ai');
   ok('nothing was reconstructed',    p.reconstructed === false);
   eq('the lines are the line items',
      p.lines.map(l => l.text + '|' + l.cents + '|' + l.qty),
