@@ -15,19 +15,19 @@
  *
  * 2. Put it in the same folder as this script, then:
  *
- *      node bulk-test.js openfoodfacts-products.jsonl.gz --limit 200000
+ *      node bulk-test.cjs openfoodfacts-products.jsonl.gz --limit 200000
  *
  *    Drop --limit to read the whole file. Start with the limit.
  *
  * Also accepts piped input, if you prefer:
  *
- *      zcat dump.jsonl.gz | node bulk-test.js
+ *      zcat dump.jsonl.gz | node bulk-test.cjs
  */
 
 const readline = require('readline');
 const fs   = require('fs');
 const zlib = require('zlib');
-const { classify, SOURCES, TIERS, MIN_PROTEIN_100G } = require('./classifier.js');
+const { classify, SOURCES, TIERS, MIN_PROTEIN_100G, FALLBACK, multFor } = require('./vendor/classifier.js');
 
 const args  = process.argv.slice(2);
 const file  = args.find(a => !a.startsWith('--'));
@@ -46,7 +46,7 @@ if (file){
   console.error('Reading ' + file + (LIMIT === Infinity ? '' : ', first ' + LIMIT.toLocaleString() + ' products') + ' …');
 } else {
   if (process.stdin.isTTY){
-    console.error('Usage: node bulk-test.js <dump.jsonl.gz> [--limit 200000]');
+    console.error('Usage: node bulk-test.cjs <dump.jsonl.gz> [--limit 200000]');
     process.exit(1);
   }
   input = process.stdin;
@@ -120,7 +120,13 @@ rl.on('close', () => {
   const rows = Object.entries(counts).sort((a,b) => b[1] - a[1]);
   for (const [k, n] of rows){
     const s = SOURCES[k];
-    const tier = s ? 't' + s.tier + ' ' + TIERS[s.tier].mult.toFixed(2) + '×' : 't3 0.25× (fallback)';
+    /* The rate is the source's own, derived from its footprint. Tiers
+       are labels now and carry no multiplier — reading one off TIERS is
+       what this line used to do, and it is the bucketing that priced
+       cheese and pork the same. */
+    const tier = s
+      ? TIERS[s.tier].name + ' ' + s.mult.toFixed(2) + '×'
+      : FALLBACK.label + ' ' + multFor(FALLBACK.co2).toFixed(2) + '× (fallback)';
     console.log(k.padEnd(12) + String(n).padStart(8) + '  ' + pct(n) + '   ' + tier);
   }
 

@@ -24,10 +24,15 @@ Needs Node 22.5 or newer (`node:sqlite` is built in above that).
 
 ## Receipts
 
-`POST /api/receipt` (multipart: `image`, plus `scanned` as JSON) reads a
-receipt and reports what it found. It does **not** create a claim — the
-user confirms the matches first, because an OCR misread that silently
-pays is worse than one the user can correct.
+`POST /api/receipt` (multipart: `image`, plus `scanned` as JSON — a list
+of barcodes and nothing else) reads a receipt and reports what it found.
+It does **not** create a claim — the user confirms the matches first,
+because an OCR misread that silently pays is worse than one the user can
+correct.
+
+It returns a `scan_id`. What it matched is recorded against that id, and
+`POST /api/claim` prices from that record: the quantity is the matched
+line's, never the request's.
 
 The receipt is not parsed cold. Receipt lines carry no barcode and are
 abbreviated per retailer (`WHEY ISO CHOC 900G`), so reading them blind
@@ -87,10 +92,53 @@ Properties, each one tested in `test-auth.js`:
     POST /api/flag                               open — reports are useful either way
     GET  /api/passport/:wallet                   open
     GET  /api/me                                 auth
-    POST /api/claim       { receipt, items[] }   auth
+    POST /api/claim       { scan_id, items[] }   auth
     POST /api/receipt     multipart              auth
     GET  /api/week                               auth
     GET  /api/review                             open — should be admin-only before launch
+
+## Nothing the client sends decides a reward
+
+The barcode and the receipt are the whole input. Every figure that
+decides a payout is derived on this side:
+
+- The **product** is resolved from the barcode against `product_version`,
+  fetching from Open Food Facts on a miss. The name matched against the
+  receipt lines is the one the cache holds — matching on a name supplied
+  by the caller lets a cheap barcode be bound to an expensive line.
+- The **protein source** is classified by `vendor/classifier.js`, which
+  is the byte-identical canonical copy from the app repo, so the two
+  cannot disagree. `npm run check:classifier` fails if it drifts.
+- The **rate** is derived from the footprint (`multFor`), never read off
+  a client-supplied multiplier.
+- The **quantity** comes from the matched receipt line. The only thing a
+  caller may say about it is the answer to a question the scan asked,
+  and answering can only ever lower a claim.
+
+A request that still carries `protein_g`, `mult` or `co2` is not
+rejected for it; those fields are simply never read.
+
+### Cached classifications are versioned
+
+Settlement is `pool / total points`, so what one barcode is worth is not
+local to its claim — it moves the denominator and therefore what every
+other wallet in the round earns. Two rules follow:
+
+- Rows are **append-only**. A new reading supersedes the old one; the old
+  row stays, and a claim keeps pointing at the figures it was paid on.
+- Within an open round a barcode resolves to **one version for everyone**.
+  A correction landing on Wednesday must not mean Monday's claimant was
+  paid on a different basis. New versions take effect at the round
+  boundary, where the denominator resets anyway.
+
+`locked = 1` pins a version permanently: it is what a human review
+writes, and it is never superseded automatically.
+
+A lookup that does not settle is never cached. It is not a fact about the
+product, and caching it would turn a network blip into a permanent zero.
+A claim that hits one fails whole and retryable, leaving the receipt
+claimable — a partial write would burn the receipt key and leave the
+remaining lines unclaimable for good.
 
 ## Design notes worth keeping
 
