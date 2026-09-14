@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db, now, currentRound, ensureWallet, flagForReview,
-         claimWindowDays, weeklyCapG, WEEKLY_CAP_G } from './db.js';
+         claimWindowDays, weeklyCapG, WEEKLY_CAP_G, requiresScanOrder } from './db.js';
 import { isPerson } from './passport.js';
 import { resolveProduct, isBarcode, LookupUnavailable } from './products.js';
 import { matchProduct, resolveQuantity } from './receipt-parse.js';
@@ -28,6 +28,52 @@ export const SCAN_TTL_MS = Number(process.env.SCAN_TTL_MS || 3600000);
    handful of scanned products; a thousand is someone using the endpoint
    as a free lookup service against a third party's rate limit. */
 export const MAX_SCAN_BARCODES = Number(process.env.MAX_SCAN_BARCODES || 50);
+
+/* How long a registered barcode stays usable. Long enough to scan the
+   shopping in the evening and photograph the receipt the next day; short
+   enough that nobody accumulates a standing library of barcodes to reach
+   for when a receipt happens to suit one. */
+export const SCAN_ORDER_TTL_MS = Number(process.env.SCAN_ORDER_TTL_MS || 3 * 86400000);
+
+/* Below this, the registration and the upload are too close together to
+   have been a person walking to a receipt. Not a rejection — the app can
+   be quick and a person can be quick with it — but the one shape a
+   modified client cannot avoid leaving, so it is worth a look. */
+export const SCAN_ORDER_SUSPICIOUS_MS = Number(process.env.SCAN_ORDER_SUSPICIOUS_MS || 1500);
+
+/**
+ * Record that a wallet scanned a barcode, now.
+ *
+ * Deliberately does not look the product up. That keeps the endpoint
+ * cheap and stops it becoming a free Open Food Facts proxy; resolution
+ * still happens once, when a receipt is read.
+ */
+export function registerScan(wallet, barcode){
+  const addr = String(wallet || '').toLowerCase();
+  const code = String(barcode || '');
+  if (!isBarcode(code)) return null;
+  const at = now();
+  db.prepare(`INSERT INTO product_scan (wallet, barcode, scanned_at) VALUES (?,?,?)`)
+    .run(addr, code, at);
+  return at;
+}
+
+/**
+ * The earliest live registration of this barcode by this wallet.
+ * Earliest rather than latest: a re-scan must not be able to move the
+ * ordering, only to keep it alive.
+ */
+export function earliestScan(wallet, barcode, before = now()){
+  const r = db.prepare(`
+    SELECT MIN(scanned_at) AS at FROM product_scan
+    WHERE wallet=? AND barcode=? AND scanned_at < ? AND scanned_at >= ?
+  `).get(String(wallet).toLowerCase(), String(barcode), before, before - SCAN_ORDER_TTL_MS);
+  return r && r.at !== null ? r.at : null;
+}
+
+export function sweepScanRegistrations(){
+  db.prepare(`DELETE FROM product_scan WHERE scanned_at < ?`).run(now() - SCAN_ORDER_TTL_MS);
+}
 
 /* A receipt's identity is the transaction it records, not the photo of
    it. Two photos of one receipt must collide; two genuine shops on the
@@ -100,13 +146,55 @@ export function createScan({ wallet, roundId, receipt, lines }){
  *
  * @returns {{ scan_id: string, matches: object[], unavailable: string[] }}
  */
-export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcodes }){
+export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcodes,
+                                    uploadedAt = now() }){
   const asked = [...new Set((barcodes || []).map(String).filter(isBarcode))]
     .slice(0, MAX_SCAN_BARCODES);
+
+  /* ---------- the ordering ----------
+   *
+   * A barcode has to have been registered before this receipt was
+   * uploaded. Reading the receipt first and then finding products to fit
+   * its lines is the thing this refuses: scanning something you did not
+   * buy, because a line happens to read PROT PWDR, costs nothing
+   * otherwise.
+   *
+   * Whether it is enforced belongs to the round, not to a constant read
+   * here — switching it on mid-round would refuse receipts from every
+   * app version that has not shipped the call yet. Until a round is
+   * stamped with it, the gap is measured and recorded but nothing is
+   * refused. */
+  const round = db.prepare(`SELECT * FROM round WHERE id=?`).get(roundId);
+  const enforce = requiresScanOrder(round);
+
+  const order = new Map();
+  for (const barcode of asked){
+    const at = earliestScan(wallet, barcode, uploadedAt);
+    order.set(barcode, at === null ? null : uploadedAt - at);
+  }
+
+  const unregistered = asked.filter(b => order.get(b) === null);
+  const hurried = asked.filter(b => {
+    const gap = order.get(b);
+    return gap !== null && gap < SCAN_ORDER_SUSPICIOUS_MS;
+  });
+
+  /* Registration and upload in the same breath is the one shape a
+     modified client cannot avoid leaving. Flagged, never auto-rejected:
+     the app can be quick, and banning on a heuristic catches real
+     people. */
+  if (hurried.length){
+    flagForReview(wallet, 'scan-order-hurried',
+      hurried.length + ' barcode(s) registered under '
+      + SCAN_ORDER_SUSPICIOUS_MS + 'ms before the receipt: ' + hurried.join(', '));
+  }
 
   const products = new Map();
   const unavailable = [];
   for (const barcode of asked){
+    /* No lookup for something that will be refused anyway — an Open Food
+       Facts call is the expensive part of reading a receipt. */
+    if (enforce && order.get(barcode) === null) continue;
     try {
       products.set(barcode, await resolveProduct(barcode, roundId));
     } catch (e){
@@ -118,6 +206,17 @@ export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcode
   }
 
   const matches = asked.map(barcode => {
+    /* Refused before the product is even considered: whether the scan
+       came first is a fact about this wallet's history, not about the
+       product, and answering it needs no lookup. */
+    if (enforce && order.get(barcode) === null){
+      return {
+        barcode, name: null, status: 'not_scanned_first',
+        matched: false, line: null, score: 0,
+        count: null, pack: null, grams: null, ask: null, protein_g: null,
+      };
+    }
+
     const prod = products.get(barcode);
 
     /* Nothing usable known about the product means no name to match on
@@ -168,7 +267,11 @@ export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcode
     })),
   });
 
-  return { scan_id, matches, unavailable };
+  return { scan_id, matches, unavailable,
+           scan_order: {
+             enforced: enforce,
+             not_scanned_first: unregistered,
+           } };
 }
 
 export function getScan(id){

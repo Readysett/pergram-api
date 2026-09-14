@@ -271,6 +271,41 @@ intact empty chain — nothing is reconstructed backwards, because
 anything reconstructed would be a guess wearing the same shape as
 evidence.
 
+## The scan has to come first
+
+The receipt confirms a purchase; the barcode says what the product is.
+Nothing tied the two in time, so a receipt could be read first and
+products found to fit its lines afterwards — scanning a friend's protein
+powder because a line reads PROT PWDR costs nothing, and the server
+could not tell.
+
+`POST /api/scan` records that a wallet scanned a barcode, timestamped
+here. `/api/receipt` then refuses any barcode with no registration
+predating the upload. Registration resolves nothing: what a product is
+worth is the server's to decide, and keeping the lookup out of it is
+also what stops the endpoint being a free proxy to Open Food Facts.
+
+**This raises a cost; it does not close a hole.** The client still
+chooses when to call, so a modified one can register and upload in the
+same breath. What it cannot do is make that look like a shopping trip,
+so a gap under `SCAN_ORDER_SUSPICIOUS_MS` is flagged for review — never
+auto-rejected, because the app can be quick and a person can be quick
+with it. Say it to a reviewer in those terms rather than as a guarantee.
+
+Enforcement is stamped on the round (`REQUIRE_SCAN_ORDER=1` for new
+rounds), for the same reason the claim window is: switching it on
+mid-round would refuse receipts from every app version that has not
+shipped the call yet, including the one most people are running. Until a
+round is stamped with it, the ordering is measured and reported but
+nothing is refused.
+
+Registrations expire after `SCAN_ORDER_TTL_MS` (3 days) — long enough to
+scan the shopping in the evening and photograph the receipt the next
+day, short enough that nobody accumulates a standing library of barcodes
+to reach for when a receipt happens to suit one. The earliest live
+registration is the one that counts, so a re-scan can keep it alive but
+never move it.
+
 ## Design notes worth keeping
 
 **Rejections stay generic.** "Already claimed" tells a farmer which field

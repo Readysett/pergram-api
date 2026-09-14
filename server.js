@@ -3,7 +3,8 @@ import multer from 'multer';
 import { ocr, imageHash } from './ocr.js';
 import { parseReceipt, matchProduct, resolveQuantity } from './receipt-parse.js';
 import { db, currentRound, ensureWallet, now, claimWindowDays, weeklyCapG } from './db.js';
-import { submitClaim, weekTotals, scanReceipt, sweepScans, receiptKey } from './claims.js';
+import { submitClaim, weekTotals, scanReceipt, sweepScans, receiptKey,
+         registerScan, sweepScanRegistrations } from './claims.js';
 import { isPerson } from './passport.js';
 import { createNonce, verifySignature, requireAuth, requireAdmin, revoke, sweep } from './auth.js';
 import { rateLimit, sweepLimits, clientIp } from './rate-limit.js';
@@ -85,6 +86,19 @@ const claimByWallet = rateLimit({
    every call — a row in one case, a write plus a call out to a Thor node
    in the other. An unauthenticated endpoint that writes is the most
    exposed thing here, whatever it writes. */
+/* Registering a scan is a row and nothing else — no lookup, by design,
+   so this endpoint cannot be used as a free Open Food Facts proxy. Still
+   limited: it is an authenticated write, and a basket is a handful of
+   products rather than hundreds. */
+const scanByWallet = rateLimit({
+  name: 'scan-wallet', windowMs: 3600_000, max: env('RL_SCAN_WALLET', 120),
+  key: req => req.wallet || '',
+});
+const scanByIp = rateLimit({
+  name: 'scan-ip', windowMs: 3600_000, max: env('RL_SCAN_IP', 400),
+  key: clientIp,
+});
+
 const flagByIp = rateLimit({
   name: 'flag-ip', windowMs: 3600_000, max: env('RL_FLAG_IP', 60),
   key: clientIp,
@@ -176,6 +190,24 @@ app.post('/api/claim', requireAuth, claimByWallet, claimByIp, async (req, res) =
     console.error(e);
     res.status(500).json({ ok:false, error:'claim failed' });
   }
+});
+
+/* Say that a barcode was scanned, now.
+ *
+ * The receipt confirms a purchase and the barcode says what the product
+ * is; nothing tied the two in time, so a receipt could be read first and
+ * products found to fit its lines afterwards. This is the other half of
+ * that ordering — the server timestamps the scan, and /api/receipt
+ * checks the scan came first.
+ *
+ * It resolves nothing. Registration is a fact about this wallet's
+ * history, not about the product, and keeping the lookup out of it is
+ * what stops the endpoint being a free proxy to Open Food Facts. */
+app.post('/api/scan', requireAuth, scanByWallet, scanByIp, (req, res) => {
+  const { barcode } = req.body || {};
+  const at = registerScan(req.wallet, barcode);
+  if (at === null) return res.status(400).json({ ok:false, error:'not a barcode' });
+  res.json({ ok:true, scanned_at: at });
 });
 
 app.get('/api/week', requireAuth, (req, res) => {
@@ -285,7 +317,7 @@ app.post('/api/receipt', requireAuth, receiptByWallet, receiptByIp,
         .map(p => String((p && p.barcode !== undefined) ? p.barcode : p));
     } catch(e){}
 
-    const { scan_id: scanId, matches, unavailable } = await scanReceipt({
+    const { scan_id: scanId, matches, unavailable, scan_order } = await scanReceipt({
       wallet: req.wallet,
       roundId: currentRound().id,
       parsed,
@@ -302,6 +334,12 @@ app.post('/api/receipt', requireAuth, receiptByWallet, receiptByIp,
          receipt as a whole — the read is still worth showing — but
          nothing on this list can be claimed until it resolves. */
       unavailable,
+
+      /* Whether this round requires the barcode scan to have come first,
+         and which barcodes did not. Reported either way, so the app can
+         explain a refusal rather than showing a line that silently
+         vanished. */
+      scan_order,
       weak_identity: weakIdentity,
       receipt: {
         store: parsed.store,
@@ -349,6 +387,10 @@ setInterval(sweepLimits, 60 * 1000).unref();
 /* Scans are short-lived by design; expired ones are not evidence of
    anything and should not accumulate. */
 setInterval(sweepScans, 600 * 1000).unref();
+
+/* Registrations expire too — a standing library of barcodes is the thing
+   the ordering exists to prevent. */
+setInterval(sweepScanRegistrations, 3600 * 1000).unref();
 
 const port = process.env.PORT || 8787;
 app.listen(port, () => console.log('Per Gram API on http://localhost:' + port));

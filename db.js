@@ -238,6 +238,33 @@ BEGIN
   SELECT RAISE(ABORT, 'audit is append-only: entries cannot be removed');
 END;
 
+/* When a wallet says it scanned a barcode.
+ *
+ * The receipt confirms a purchase; the barcode says what the product is.
+ * Nothing tied those two in time, so a receipt could be read first and
+ * products found to fit the lines on it afterwards — scanning a friend's
+ * protein powder to match a line reading PROT PWDR costs nothing and the
+ * server could not tell.
+ *
+ * Registering the scan when it happens gives the ordering something to
+ * be checked against. It is a cost-raiser rather than a closed hole: the
+ * client still chooses when to call, so a modified one can register and
+ * upload in the same breath. What it cannot do is make that look like a
+ * shopping trip, which is why the gap is recorded rather than only
+ * tested.
+ *
+ * Append rather than upsert: the earliest registration is the one the
+ * ordering turns on, and an upsert would let a re-scan quietly move it. */
+CREATE TABLE IF NOT EXISTS product_scan (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet     TEXT    NOT NULL,
+  barcode    TEXT    NOT NULL,
+  scanned_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS product_scan_lookup
+  ON product_scan(wallet, barcode, scanned_at);
+
 CREATE TABLE IF NOT EXISTS flag (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   barcode    TEXT NOT NULL,
@@ -307,6 +334,14 @@ addColumn('round', 'claim_window_days', 'INTEGER');
    against 3000 would rewrite it. */
 addColumn('round', 'weekly_cap_g', 'REAL');
 
+/* Whether this round requires a barcode to have been registered before
+   the receipt was uploaded. Stamped at creation for the same reason the
+   claim window is: switching it on mid-round would refuse receipts from
+   every app version that has not shipped the call yet, including the one
+   most people are running. Rounds predating the column read NULL and do
+   not require it. */
+addColumn('round', 'require_scan_order', 'INTEGER');
+
 addColumn('round', 'total_points', 'REAL');
 addColumn('round', 'rate_b3tr_per_point', 'REAL');
 addColumn('round', 'settled_at', 'INTEGER');
@@ -359,6 +394,13 @@ export const weeklyCapG = round =>
    under, and reading them as anything else would rewrite history. */
 export const LEGACY_CLAIM_WINDOW_DAYS = 30;
 
+/* What a newly opened round is stamped with. Off until the app that
+   makes the call is the one in people's hands; on from the next round
+   after that. Set REQUIRE_SCAN_ORDER=1 to stamp new rounds with it. */
+export const REQUIRE_SCAN_ORDER = process.env.REQUIRE_SCAN_ORDER === '1';
+
+export const requiresScanOrder = round => !!(round && round.require_scan_order);
+
 export const claimWindowDays = round =>
   round && round.claim_window_days != null
     ? round.claim_window_days
@@ -369,9 +411,10 @@ export function currentRound(){
   if (r) return r;
   const t = now();
   const week = 7 * 24 * 3600 * 1000;
-  db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days, weekly_cap_g)
-              VALUES (?, ?, ?, ?)`)
-    .run(t, t + week, CLAIM_WINDOW_DAYS, WEEKLY_CAP_G);
+  db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days,
+                                weekly_cap_g, require_scan_order)
+              VALUES (?, ?, ?, ?, ?)`)
+    .run(t, t + week, CLAIM_WINDOW_DAYS, WEEKLY_CAP_G, REQUIRE_SCAN_ORDER ? 1 : 0);
   const opened = db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
 
   /* A round opening is the first event in its own history, and it fixes
@@ -382,7 +425,8 @@ export function currentRound(){
     to_state: 'open', round_id: opened.id, actor: 'server',
     detail: { opens_at: opened.opens_at, closes_at: opened.closes_at,
               claim_window_days: opened.claim_window_days,
-              weekly_cap_g: opened.weekly_cap_g },
+              weekly_cap_g: opened.weekly_cap_g,
+              require_scan_order: !!opened.require_scan_order },
   });
 
   return opened;
