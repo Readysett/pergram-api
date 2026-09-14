@@ -43,3 +43,5 @@ test-settle.db-*
 
 test-limits-endpoints.db
 test-limits-endpoints.db-*
+test-claim-window.db
+test-claim-window.db-*
