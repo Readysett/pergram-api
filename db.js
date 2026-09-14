@@ -1,4 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
+/* Circular with audit.js, and safe: audit.js touches nothing from here
+   at module-evaluation time, only inside its functions, so the binding
+   is live by the time anything calls one. Static rather than a lazy
+   import() because a round opening must be logged synchronously, in
+   whatever transaction is open — a promise would land outside it, or in
+   a short-lived CLI process, never. */
+import { record } from './audit.js';
 
 /* Schema mirrors the claim state machine. The important columns are the
    constraints, not the data: receipt_key is unique so the same receipt
@@ -186,6 +193,51 @@ CREATE TABLE IF NOT EXISTS payout (
 
 CREATE INDEX IF NOT EXISTS payout_by_wallet ON payout(wallet, round_id);
 
+/* What happened, in order, with the figures that made each decision.
+ *
+ * claim records what a claim is worth and payout records what a round
+ * paid; neither records how either got there. A claim reading 'settled'
+ * does not say when it stopped being 'verified' or under which
+ * settlement, and for a distribution meant to be audited the sequence is
+ * the thing being audited.
+ *
+ * Append-only is enforced below rather than promised: triggers abort any
+ * UPDATE or DELETE, so the property does not depend on every future
+ * caller remembering it. Each row also carries the hash of the row
+ * before it, so altering or removing one breaks the chain from that
+ * point and "node audit.js --verify" names where. The triggers stop an
+ * honest mistake; the chain is what survives someone with a SQLite
+ * prompt and a reason to use it. */
+CREATE TABLE IF NOT EXISTS audit (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         INTEGER NOT NULL,
+  subject    TEXT    NOT NULL,     -- claim | round | payout | wallet
+  subject_id TEXT    NOT NULL,
+  event      TEXT    NOT NULL,     -- created | settled | opened | recorded | ...
+  from_state TEXT,
+  to_state   TEXT,
+  round_id   INTEGER,
+  wallet     TEXT,
+  detail     TEXT,                 -- JSON: the figures behind the decision
+  actor      TEXT    NOT NULL,     -- what did it: claim-api | settle | ...
+  prev_hash  TEXT    NOT NULL,
+  hash       TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS audit_by_subject ON audit(subject, subject_id, id);
+CREATE INDEX IF NOT EXISTS audit_by_round   ON audit(round_id, id);
+CREATE INDEX IF NOT EXISTS audit_by_wallet  ON audit(wallet, id);
+
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
+BEGIN
+  SELECT RAISE(ABORT, 'audit is append-only: entries cannot be changed');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
+BEGIN
+  SELECT RAISE(ABORT, 'audit is append-only: entries cannot be removed');
+END;
+
 CREATE TABLE IF NOT EXISTS flag (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   barcode    TEXT NOT NULL,
@@ -290,7 +342,19 @@ export function currentRound(){
   const week = 7 * 24 * 3600 * 1000;
   db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days) VALUES (?, ?, ?)`)
     .run(t, t + week, CLAIM_WINDOW_DAYS);
-  return db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
+  const opened = db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
+
+  /* A round opening is the first event in its own history, and it fixes
+     the terms it will be settled under. It belongs in the log as much as
+     the settlement does. */
+  record({
+    subject: 'round', subject_id: opened.id, event: 'opened',
+    to_state: 'open', round_id: opened.id, actor: 'server',
+    detail: { opens_at: opened.opens_at, closes_at: opened.closes_at,
+              claim_window_days: opened.claim_window_days },
+  });
+
+  return opened;
 }
 
 export function ensureWallet(address){

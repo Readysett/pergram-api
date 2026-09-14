@@ -1,5 +1,6 @@
 import { db, now, currentRound } from './db.js';
 import { WEEKLY_CAP_G } from './claims.js';
+import { record } from './audit.js';
 
 /* Round settlement.
  *
@@ -58,9 +59,37 @@ export function settle(roundId, poolB3tr){
     db.prepare(`UPDATE round SET pool_b3tr=?, total_points=?, rate_b3tr_per_point=?,
                                  settled_at=?, state='settling' WHERE id=?`)
       .run(poolB3tr, total, rate, now(), roundId);
+    /* Which claims this settlement moved, captured before the update so
+       the log names them rather than saying "everything that was
+       verified" — which is only answerable while it still is. */
+    const moved = db.prepare(
+      `SELECT id, wallet FROM claim WHERE round_id=? AND state='verified'`).all(roundId);
+
     db.prepare(`UPDATE claim SET state='settled' WHERE round_id=? AND state='verified'`).run(roundId);
+
+    record({
+      subject: 'round', subject_id: roundId, event: 'settled',
+      from_state: round.state, to_state: 'settling', round_id: roundId, actor: 'settle',
+      detail: { pool_b3tr: poolB3tr, total_points: total, rate_b3tr_per_point: rate,
+                wallets: payouts.length, claims_settled: moved.length },
+    });
+
+    for (const c of moved){
+      record({
+        subject: 'claim', subject_id: c.id, event: 'settled',
+        from_state: 'verified', to_state: 'settled',
+        round_id: roundId, wallet: c.wallet, actor: 'settle',
+        detail: { rate_b3tr_per_point: rate },
+      });
+    }
+
     for (const p of payouts){
       insert.run(roundId, p.wallet, p.protein, p.points, p.capped ? 1 : 0, p.b3tr, now());
+      record({
+        subject: 'payout', subject_id: roundId + ':' + p.wallet, event: 'recorded',
+        round_id: roundId, wallet: p.wallet, actor: 'settle',
+        detail: { protein_g: p.protein, points: p.points, capped: p.capped, b3tr: p.b3tr },
+      });
     }
     db.exec('COMMIT');
   } catch (e){

@@ -206,6 +206,44 @@ rewrite what their claimants were entitled to.
 with. `/api/week` returns the open round's window so the app can say it
 without hardcoding a number that is not its to hold.
 
+## The audit log
+
+`claim` records what a claim is worth and `payout` records what a round
+paid. Neither records how either got there: a claim reading `settled`
+does not say when it stopped being `verified`, or under which
+settlement. For a distribution meant to be audited, the sequence is the
+thing being audited.
+
+Every state a claim or a round passes through is now an entry in
+`audit`, written **inside the transaction that causes it** — the entry
+and the fact commit together, so there is no claim without an entry and
+no entry for a claim that rolled back.
+
+    node audit.js --verify            check the chain
+    node audit.js --claim  <id>       one claim's history
+    node audit.js --round  <id>       a round, opening to payouts
+    node audit.js --wallet <address>  everything touching one wallet
+
+Two properties, enforced rather than promised:
+
+- **Append-only.** Triggers abort any UPDATE or DELETE on the table, so
+  it does not depend on every future caller remembering.
+- **Tamper-evident.** Each entry carries the hash of the one before it.
+  Altering a row breaks its own hash; removing one orphans its
+  successor; `--verify` names the first entry that stops adding up. The
+  triggers stop an honest mistake — the chain is what survives someone
+  with a SQLite prompt and a reason to use it.
+
+A claim entry carries the product version it was priced from, so the
+claim can be recomputed from the cache row rather than taken on trust
+from the claim row.
+
+The log begins when it is deployed. Claims settled before that have no
+entries, and `--verify` on a database from before the change reports an
+intact empty chain — nothing is reconstructed backwards, because
+anything reconstructed would be a guess wearing the same shape as
+evidence.
+
 ## Design notes worth keeping
 
 **Rejections stay generic.** "Already claimed" tells a farmer which field
