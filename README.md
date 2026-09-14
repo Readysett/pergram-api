@@ -18,6 +18,7 @@ Needs Node 22.5 or newer (`node:sqlite` is built in above that).
 - VeBetterPassport personhood check before any claim is accepted, cached
   six hours, failing closed if the node is unreachable.
 - Weekly cap of 1500g protein per wallet, 1000g per receipt.
+- Receipts must be dated within the round's claim window (5 days).
 - Round settlement at `pool / total points`, with the cap scaling a
   wallet's points proportionally rather than truncating the last claim.
 - Review queue for signals that should not be automatic blocks.
@@ -188,6 +189,22 @@ the most exposed thing here, whatever it writes.
 
 Defaults are env-tunable: the right value depends on the OCR bill and on
 how many people share an address, and neither is knowable from the code.
+
+## The claim window belongs to the round
+
+How far back a receipt may be dated is stamped on the round when it
+opens, not read from a constant at claim time. Tightening the constant
+therefore takes effect at the next round boundary rather than voiding
+receipts mid-round that were claimable the same morning — and the round
+is already the unit that prices, caps and payouts are pinned to.
+
+Rounds opened before the column existed read NULL and keep the 30 days
+they were actually run under. Reading them as anything else would
+rewrite what their claimants were entitled to.
+
+`CLAIM_WINDOW_DAYS` (default 5) sets what the *next* round is stamped
+with. `/api/week` returns the open round's window so the app can say it
+without hardcoding a number that is not its to hold.
 
 ## Design notes worth keeping
 

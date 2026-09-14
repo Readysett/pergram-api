@@ -234,6 +234,18 @@ addColumn('claim', 'product_version', 'INTEGER');
    from the payouts, but storing it means the number that was actually
    used is recorded rather than recomputed later from rows that may since
    have been corrected. */
+/* How far back a receipt may be dated to be claimable in this round.
+ *
+ * Stamped on the round at creation rather than read from a constant at
+ * claim time, so a change to the constant takes effect at the next round
+ * boundary instead of mid-round. Tightening it live would silently void
+ * receipts people could have claimed the same morning, and the round is
+ * the unit every other figure is pinned to.
+ *
+ * Rounds that predate the column read NULL and keep the old 30 days —
+ * the change arrives when the next round opens, not retroactively. */
+addColumn('round', 'claim_window_days', 'INTEGER');
+
 addColumn('round', 'total_points', 'REAL');
 addColumn('round', 'rate_b3tr_per_point', 'REAL');
 addColumn('round', 'settled_at', 'INTEGER');
@@ -257,12 +269,27 @@ addColumn('round', 'settled_at', 'INTEGER');
 
 export const now = () => Date.now();
 
+/* The window a newly opened round is stamped with. Changing this affects
+   the NEXT round, never one that is already open and part-claimed. */
+export const CLAIM_WINDOW_DAYS = Number(process.env.CLAIM_WINDOW_DAYS || 5);
+
+/* What a round created before the column was added is treated as. Not a
+   value anyone chose now — it is what those rounds were actually run
+   under, and reading them as anything else would rewrite history. */
+export const LEGACY_CLAIM_WINDOW_DAYS = 30;
+
+export const claimWindowDays = round =>
+  round && round.claim_window_days != null
+    ? round.claim_window_days
+    : LEGACY_CLAIM_WINDOW_DAYS;
+
 export function currentRound(){
   const r = db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
   if (r) return r;
   const t = now();
   const week = 7 * 24 * 3600 * 1000;
-  db.prepare(`INSERT INTO round (opens_at, closes_at) VALUES (?, ?)`).run(t, t + week);
+  db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days) VALUES (?, ?, ?)`)
+    .run(t, t + week, CLAIM_WINDOW_DAYS);
   return db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
 }
 

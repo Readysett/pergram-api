@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { db, now, currentRound, ensureWallet, flagForReview } from './db.js';
+import { db, now, currentRound, ensureWallet, flagForReview, claimWindowDays } from './db.js';
 import { isPerson } from './passport.js';
 import { resolveProduct, isBarcode, LookupUnavailable } from './products.js';
 import { matchProduct, resolveQuantity } from './receipt-parse.js';
@@ -270,10 +270,19 @@ export async function submitClaim({ wallet, scan_id, items }){
 
   /* A receipt dated in the future, or long in the past, is either a bad
      OCR read or someone working through a shoebox. Neither should pay.
-     Read off the stored parse, not off the request. */
+     Read off the stored parse, not off the request.
+
+     The window comes from the round the claim lands in, not from a
+     constant read at claim time, so tightening it takes effect at a
+     round boundary rather than voiding receipts mid-round that were
+     claimable the same morning. */
+  const windowDays = claimWindowDays(round);
   const age = now() - (scan.purchased || 0);
-  if (age < -86400000)        return { ok:false, error:'receipt date is in the future' };
-  if (age > 30 * 86400000)    return { ok:false, error:'receipt is older than 30 days' };
+  if (age < -86400000) return { ok:false, error:'receipt date is in the future' };
+  if (age > windowDays * 86400000){
+    return { ok:false,
+             error:`receipt is older than ${windowDays} day${windowDays === 1 ? '' : 's'}` };
+  }
 
   const byBarcode = new Map(scanLines(scan_id).map(l => [l.barcode, l]));
 

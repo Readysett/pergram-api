@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import { ocr, imageHash } from './ocr.js';
 import { parseReceipt, matchProduct, resolveQuantity } from './receipt-parse.js';
-import { db, currentRound, ensureWallet, now } from './db.js';
+import { db, currentRound, ensureWallet, now, claimWindowDays } from './db.js';
 import { submitClaim, weekTotals, scanReceipt, sweepScans, receiptKey, WEEKLY_CAP_G } from './claims.js';
 import { isPerson } from './passport.js';
 import { createNonce, verifySignature, requireAuth, requireAdmin, revoke, sweep } from './auth.js';
@@ -190,6 +190,10 @@ app.get('/api/week', requireAuth, (req, res) => {
     round: round.id,
     closes_at: round.closes_at,
     cap_g: WEEKLY_CAP_G,
+
+    /* So the app can say how old a receipt may be without hardcoding a
+       number that is a property of the round, not of the client. */
+    claim_window_days: claimWindowDays(round),
     protein_g: t.protein,
     counted_g: Math.min(t.protein, WEEKLY_CAP_G),
     points_raw: t.points,
