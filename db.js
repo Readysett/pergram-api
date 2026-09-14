@@ -160,6 +160,32 @@ CREATE TABLE IF NOT EXISTS receipt_scan_line (
 
 CREATE INDEX IF NOT EXISTS scan_by_wallet ON receipt_scan(wallet, created_at);
 
+/* What a round actually paid, and to whom.
+ *
+ * Settlement used to compute the rate and the per-wallet split, print
+ * them, and return them — the only write was marking claims settled. A
+ * settled round could not be reconstructed afterwards: the rate and the
+ * split existed only in whatever terminal ran it. For a distribution
+ * anyone is expected to audit, that is the record, and it was not being
+ * kept.
+ *
+ * Written in the same transaction as the claims it settles, so there is
+ * no state where claims read 'settled' and no payout explains them.
+ * (round_id, wallet) is unique, which is also what makes re-settling a
+ * round fail loudly rather than overwrite the history. */
+CREATE TABLE IF NOT EXISTS payout (
+  round_id   INTEGER NOT NULL,
+  wallet     TEXT    NOT NULL,
+  protein_g  REAL    NOT NULL,   -- as claimed, before the cap scales it
+  points     REAL    NOT NULL,   -- after cap scaling; the share of the pool
+  capped     INTEGER NOT NULL,
+  b3tr       REAL    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (round_id, wallet)
+);
+
+CREATE INDEX IF NOT EXISTS payout_by_wallet ON payout(wallet, round_id);
+
 CREATE TABLE IF NOT EXISTS flag (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   barcode    TEXT NOT NULL,
@@ -203,6 +229,14 @@ function addColumn(table, name, decl){
    only be re-checked against whatever the barcode resolves to today,
    which is exactly the coupling the versioning removes. */
 addColumn('claim', 'product_version', 'INTEGER');
+
+/* The rate a round settled at, kept beside the pool it divided. Derived
+   from the payouts, but storing it means the number that was actually
+   used is recorded rather than recomputed later from rows that may since
+   have been corrected. */
+addColumn('round', 'total_points', 'REAL');
+addColumn('round', 'rate_b3tr_per_point', 'REAL');
+addColumn('round', 'settled_at', 'INTEGER');
 
 /* product_cache was declared in the first schema and never read or
    written by any code path — the design was specified and not built.
