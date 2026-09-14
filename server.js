@@ -2,9 +2,8 @@ import express from 'express';
 import multer from 'multer';
 import { ocr, imageHash } from './ocr.js';
 import { parseReceipt, matchProduct, resolveQuantity } from './receipt-parse.js';
-import { receiptKey } from './claims.js';
 import { db, currentRound, ensureWallet, now } from './db.js';
-import { submitClaim, weekTotals, WEEKLY_CAP_G } from './claims.js';
+import { submitClaim, weekTotals, scanReceipt, sweepScans, receiptKey, WEEKLY_CAP_G } from './claims.js';
 import { isPerson } from './passport.js';
 import { createNonce, verifySignature, requireAuth, requireAdmin, revoke, sweep } from './auth.js';
 import { rateLimit, sweepLimits, clientIp } from './rate-limit.js';
@@ -103,10 +102,16 @@ app.get('/api/me', requireAuth, async (req, res) => {
 
 /* The wallet comes from the session, never the body. Trusting a body
    field while merely checking a token exists would leave the original
-   hole wide open. */
+   hole wide open.
+ *
+ * The body carries a scan id and a list of barcodes — nothing else that
+ * bears on the reward. Only scan_id and items are forwarded, so a client
+ * that keeps sending protein_g, mult or co2 is not merely disbelieved:
+ * the fields do not reach the claim logic at all. */
 app.post('/api/claim', requireAuth, async (req, res) => {
   try {
-    const out = await submitClaim({ ...(req.body || {}), wallet: req.wallet });
+    const { scan_id, items } = req.body || {};
+    const out = await submitClaim({ wallet: req.wallet, scan_id, items });
     res.status(out.ok ? 200 : 400).json(out);
   } catch (e){
     console.error(e);
@@ -162,10 +167,15 @@ app.get('/api/review', requireAdmin, (req, res) => {
  * before anything is claimed, because an OCR misread that silently pays
  * is worse than one the user can correct.
  *
- * The caller supplies the products they already scanned. The receipt
- * only has to confirm a matching line and supply the quantity — matching
- * a known name against candidate lines is a far smaller problem than
- * reading receipt lines cold.
+ * The caller supplies the barcodes it scanned, and nothing else about
+ * them. The name and pack size used for matching are read from the
+ * server's own product cache, because matching on a client-supplied name
+ * lets a cheap barcode be bound to an expensive line.
+ *
+ * What it finds is recorded as a scan, and /api/claim prices from that
+ * record. Before this the quantity was resolved correctly here and then
+ * discarded, which left the claim endpoint with no matched line to take
+ * a quantity from.
  */
 /* Six, not eight. Vision caps a JSON request at 10MB and base64 inflates
    by a third, so anything past about 7.5MB cannot be sent inline at all.
@@ -194,28 +204,31 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
 
     const already = db.prepare(`SELECT wallet FROM receipt WHERE key=?`).get(key);
 
-    let scanned = [];
-    try { scanned = JSON.parse(req.body.scanned || '[]'); } catch(e){}
+    /* Barcodes only. Anything else the client sends about a product is
+       not validated and then used — it is never read. */
+    let barcodes = [];
+    try {
+      barcodes = JSON.parse(req.body.scanned || '[]')
+        .map(p => String((p && p.barcode !== undefined) ? p.barcode : p));
+    } catch(e){}
 
-    const matches = scanned.map(p => {
-      const line = matchProduct(p.name || '', parsed.lines);
-      const q    = resolveQuantity({ line, quantity: p.quantity, productName: p.name });
-      return {
-        barcode: p.barcode, name: p.name,
-        matched: !!line,
-        line: line ? line.text : null,
-        score: line ? line.score : 0,
-        count: q.count,
-        pack:  q.pack,
-        grams: q.grams,
-        ask:   q.ask,
-        protein_g: (q.grams && p.protein100) ? +(q.grams * p.protein100 / 100).toFixed(1) : null,
-      };
+    const { scan_id: scanId, matches, unavailable } = await scanReceipt({
+      wallet: req.wallet,
+      roundId: currentRound().id,
+      parsed,
+      image_hash: img,
+      barcodes,
     });
 
     res.json({
       ok: true,
+      scan_id: scanId,
       already_claimed: !!already,
+
+      /* Barcodes whose lookup did not settle. Not an error for the
+         receipt as a whole — the read is still worth showing — but
+         nothing on this list can be claimed until it resolves. */
+      unavailable,
       weak_identity: weakIdentity,
       receipt: {
         store: parsed.store,
@@ -245,7 +258,7 @@ app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) =
       dropped: parsed.dropped,
 
       matches,
-      note: 'Nothing has been claimed. Confirm the matches, then POST /api/claim.',
+      note: 'Nothing has been claimed. Confirm the matches, then POST /api/claim with this scan_id and the barcodes to claim.',
     });
   } catch (e){
     console.error(e);
@@ -259,6 +272,10 @@ setInterval(sweep, 3600 * 1000).unref();
    caller rotating addresses would otherwise grow the map between
    passes. */
 setInterval(sweepLimits, 60 * 1000).unref();
+
+/* Scans are short-lived by design; expired ones are not evidence of
+   anything and should not accumulate. */
+setInterval(sweepScans, 600 * 1000).unref();
 
 const port = process.env.PORT || 8787;
 app.listen(port, () => console.log('Per Gram API on http://localhost:' + port));

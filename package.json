@@ -9,7 +9,10 @@
   "scripts": {
     "start": "node server.js",
     "settle": "node settle.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "test": "node test-server-derived.js && node test-quantity.js",
+    "test:derived": "node test-server-derived.js",
+    "check:classifier": "node check-classifier.js"
   },
   "dependencies": {
     "@vechain/sdk-core": "^2.1.0",

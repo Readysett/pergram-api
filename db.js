@@ -75,19 +75,90 @@ CREATE INDEX IF NOT EXISTS claim_by_wallet ON claim(wallet, created_at);
 
 /* Barcode classifications are cached rather than read live. Open Food
    Facts is a wiki: if payouts depended on live reads, editing the
-   database would be an attack. A cached row is also where a user's
-   "this looks wrong" correction lands. */
-CREATE TABLE IF NOT EXISTS product_cache (
-  barcode      TEXT PRIMARY KEY,
-  name         TEXT,
-  brands       TEXT,
-  protein_100g REAL,
-  source_key   TEXT,
-  co2          REAL,
-  mult         REAL,
-  locked       INTEGER DEFAULT 0,  -- 1 = human-reviewed, never auto-overwritten
-  fetched_at   INTEGER NOT NULL
+   database would be an attack.
+
+   Rows are versioned and append-only. Nothing is ever updated in place,
+   because a payout is relative — settle.js divides the pool by the round's
+   total points, so changing what one barcode is worth mid-round silently
+   changes what every OTHER wallet in that round earns. Superseding
+   instead of overwriting keeps a claim's price attached to the exact
+   figures it was priced from, and products.js additionally pins a
+   barcode to one version for the lifetime of an open round, so two
+   people claiming the same tin in the same week are always paid the
+   same. New versions take effect at a round boundary, where the
+   denominator resets anyway.
+
+   status separates outcomes that must never be conflated:
+     ok        - fetched and priced
+     absent    - Open Food Facts has no such product; settled, not an error
+     below_min - real product, under MIN_PROTEIN_100G, earns nothing
+   A transient fetch failure is NOT a status. It is never cached, because
+   caching it would turn a network blip into a permanent zero.
+
+   The raw classifier inputs (ingredients/categories/vegan) are kept so a
+   rules change can be re-run against what the record actually said,
+   without a refetch. rules_hash records which rules produced the row. */
+CREATE TABLE IF NOT EXISTS product_version (
+  barcode       TEXT    NOT NULL,
+  version       INTEGER NOT NULL,
+  status        TEXT    NOT NULL,     -- ok | absent | below_min
+  found_as      TEXT,                 -- the barcode variant that actually matched
+  name          TEXT,
+  brands        TEXT,
+  quantity      TEXT,                 -- OFF pack-size string, read by resolveQuantity
+  protein_100g  REAL,
+  ingredients   TEXT,
+  categories    TEXT,
+  vegan         INTEGER DEFAULT 0,
+  source_key    TEXT,
+  co2           REAL,
+  mult          REAL,
+  rules_hash    TEXT,
+  locked        INTEGER DEFAULT 0,    -- 1 = human-reviewed; pinned, never superseded
+  fetched_at    INTEGER NOT NULL,
+  superseded_at INTEGER,              -- null = current
+  PRIMARY KEY (barcode, version)
 );
+
+CREATE INDEX IF NOT EXISTS product_current
+  ON product_version(barcode, superseded_at);
+
+/* A receipt read is not a claim, so it cannot go in the receipt table:
+   that table's primary key IS the anti-replay control, and inserting on
+   read would burn a receipt the user never confirmed. Scans are their
+   own short-lived thing, bound to the wallet that uploaded them.
+
+   This is what makes a server-derived quantity possible at all. The
+   parse already resolves the quantity correctly at read time; before
+   this it was computed, returned and thrown away, leaving /api/claim
+   with no matched line to take a quantity FROM. */
+CREATE TABLE IF NOT EXISTS receipt_scan (
+  id          TEXT PRIMARY KEY,
+  wallet      TEXT NOT NULL,
+  round_id    INTEGER NOT NULL,   -- a scan may only be claimed in the round it was read in
+
+  store       TEXT,
+  txn         TEXT,
+  purchased   INTEGER,
+  total_cents INTEGER,
+  image_hash  TEXT,
+  created_at  INTEGER NOT NULL,
+  consumed_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS receipt_scan_line (
+  scan_id         TEXT    NOT NULL,
+  barcode         TEXT    NOT NULL,
+  matched         INTEGER NOT NULL,
+  line_text       TEXT,
+  grams           REAL,               -- derived from the matched line; the only quantity that pays
+  lower_g         REAL,               -- the lower answer to an ask, when there is one
+  ask_question    TEXT,
+  product_version INTEGER,            -- null when the lookup did not settle
+  PRIMARY KEY (scan_id, barcode)
+);
+
+CREATE INDEX IF NOT EXISTS scan_by_wallet ON receipt_scan(wallet, created_at);
 
 CREATE TABLE IF NOT EXISTS flag (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +182,44 @@ CREATE TABLE IF NOT EXISTS review (
   cleared    INTEGER DEFAULT 0
 );
 `);
+
+/* ---------- migrations ----------
+ *
+ * CREATE TABLE IF NOT EXISTS does nothing to a database that already
+ * exists, so anything added after the first deploy has to be applied
+ * here. Both are written to be safe to run on every boot.
+ */
+
+function columns(table){
+  return new Set(db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table).map(r => r.name));
+}
+
+function addColumn(table, name, decl){
+  if (columns(table).has(name)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`);
+}
+
+/* Which cached figures a claim was priced from. Without it a claim can
+   only be re-checked against whatever the barcode resolves to today,
+   which is exactly the coupling the versioning removes. */
+addColumn('claim', 'product_version', 'INTEGER');
+
+/* product_cache was declared in the first schema and never read or
+   written by any code path — the design was specified and not built.
+   product_version replaces it. Dropping it is guarded rather than
+   unconditional: if a deployment turns out to have rows in it, they were
+   put there by hand and are someone's work, so leave them and say so. */
+{
+  const exists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_cache'`).get();
+  if (exists){
+    const n = db.prepare(`SELECT COUNT(*) AS n FROM product_cache`).get().n;
+    if (n === 0) db.exec(`DROP TABLE product_cache`);
+    else console.warn(
+      `\n  NOTE: product_cache holds ${n} hand-written row(s) and has been left in place.\n` +
+      `  It is no longer read; product_version supersedes it. Migrate or drop it by hand.\n`);
+  }
+}
 
 export const now = () => Date.now();
 

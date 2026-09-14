@@ -32,3 +32,7 @@ Thumbs.db
 # Local scratch
 *.log
 npm-debug.log*
+
+# test fixtures
+test-server-derived.db
+test-server-derived.db-*

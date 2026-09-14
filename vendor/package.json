@@ -1,0 +1,4 @@
+{
+  "type": "commonjs",
+  "//": "classifier.js is the byte-identical canonical copy from the pergram frontend repo, where it is loaded as a classic browser script and so cannot use ESM syntax. This marker lets Node resolve it as CommonJS inside an otherwise type:module package, so the API imports the same bytes the app runs rather than a second copy that can drift. Do not edit classifier.js here; edit it in the frontend repo and re-vendor. npm run check:classifier verifies the two are identical."
+}
