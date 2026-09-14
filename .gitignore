@@ -40,3 +40,6 @@ test-server-derived.db-*
 # test fixtures
 test-settle.db
 test-settle.db-*
+
+test-limits-endpoints.db
+test-limits-endpoints.db-*

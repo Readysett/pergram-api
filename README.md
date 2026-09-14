@@ -159,6 +159,36 @@ verified claims, divide a pool by nothing, and overwrite the record with
 a rate of zero — so the first run's numbers stand and the error says
 where to read them.
 
+## Rate limits
+
+Every endpoint that costs something carries two limits: per-IP, which
+bounds a flood, and per-wallet, which shapes one account.
+
+    /api/receipt    40/hr per IP     15/hr per wallet   RL_RECEIPT_*
+    /api/claim     200/hr per IP     60/hr per wallet   RL_CLAIM_*
+    /api/flag       60/hr per IP                        RL_FLAG_IP
+    /api/passport  120/hr per IP                        RL_PASSPORT_IP
+
+The per-IP limit is the one doing the real work. Personhood gates
+*claiming*, not reading — `/api/receipt` needs only a signed-in wallet,
+and wallets are free — so a per-wallet limit is bypassed by rotating
+addresses. It still earns its place by stopping one real account running
+away with the OCR budget by accident, but it is not what stops a
+determined caller.
+
+On `/api/receipt` the limits sit between the session check and the
+upload. `requireAuth` reads a header; multer buffers up to six megabytes
+before the handler sees anything, and the OCR behind it is a paid call.
+A refused request should pay for none of that.
+
+`/api/flag` and `/api/passport/:wallet` need no session at all, and each
+costs something per call — a row in one case, a row plus an outbound
+Thor request in the other. An unauthenticated endpoint that writes is
+the most exposed thing here, whatever it writes.
+
+Defaults are env-tunable: the right value depends on the OCR bill and on
+how many people share an address, and neither is knowable from the code.
+
 ## Design notes worth keeping
 
 **Rejections stay generic.** "Already claimed" tells a farmer which field

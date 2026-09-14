@@ -35,9 +35,68 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, round: currentRound().id });
 });
 
+/* ---------- limits on the endpoints that cost something ----------
+ *
+ * Two dimensions on each, for the reason the auth limits have two: the
+ * per-IP limit is what bounds a flood, and the per-wallet limit is what
+ * shapes one account.
+ *
+ * Of the two, the per-IP limit is the one doing the real work here.
+ * Personhood gates CLAIMING, not reading: /api/receipt needs only a
+ * signed-in wallet, and wallets are free, so a per-wallet limit is
+ * bypassed by rotating addresses. A per-wallet limit still earns its
+ * place — it stops one real account running away with the OCR budget by
+ * accident — but it is not the control that stops a determined caller.
+ *
+ * Numbers are env-tunable because the right value depends on the OCR
+ * bill and on how many people share an address, and neither is knowable
+ * from here. The defaults are set for what a real shop looks like: a
+ * receipt or three, plus room to retry a bad photograph several times.
+ */
+const env = (name, fallback) => Number(process.env[name] || fallback);
+
+/* The expensive one. Every call is an OCR request against a paid API
+   plus up to MAX_SCAN_BARCODES lookups against Open Food Facts, who
+   rate-limit us in turn and would be within their rights to block us. */
+const receiptByIp = rateLimit({
+  name: 'receipt-ip', windowMs: 3600_000, max: env('RL_RECEIPT_IP', 40),
+  key: clientIp,
+});
+const receiptByWallet = rateLimit({
+  name: 'receipt-wallet', windowMs: 3600_000, max: env('RL_RECEIPT_WALLET', 15),
+  key: req => req.wallet || '',
+});
+
+/* Claiming is cheaper — no OCR, and the products are usually cached by
+   the time it runs — so this is set well above what a person does. A
+   lookup that does not settle returns a retryable refusal and the app
+   tells the user to try again, so a tight limit here would punish the
+   retry the server itself asked for. */
+const claimByIp = rateLimit({
+  name: 'claim-ip', windowMs: 3600_000, max: env('RL_CLAIM_IP', 200),
+  key: clientIp,
+});
+const claimByWallet = rateLimit({
+  name: 'claim-wallet', windowMs: 3600_000, max: env('RL_CLAIM_WALLET', 60),
+  key: req => req.wallet || '',
+});
+
+/* Open endpoints. Neither needs a session, and both cost something on
+   every call — a row in one case, a write plus a call out to a Thor node
+   in the other. An unauthenticated endpoint that writes is the most
+   exposed thing here, whatever it writes. */
+const flagByIp = rateLimit({
+  name: 'flag-ip', windowMs: 3600_000, max: env('RL_FLAG_IP', 60),
+  key: clientIp,
+});
+const passportByIp = rateLimit({
+  name: 'passport-ip', windowMs: 3600_000, max: env('RL_PASSPORT_IP', 120),
+  key: clientIp,
+});
+
 /* Personhood, surfaced so the app can tell a user why they cannot claim
    before they photograph a receipt — not after. */
-app.get('/api/passport/:wallet', async (req, res) => {
+app.get('/api/passport/:wallet', passportByIp, async (req, res) => {
   ensureWallet(req.params.wallet);
   res.json(await isPerson(req.params.wallet));
 });
@@ -108,7 +167,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
  * bears on the reward. Only scan_id and items are forwarded, so a client
  * that keeps sending protein_g, mult or co2 is not merely disbelieved:
  * the fields do not reach the claim logic at all. */
-app.post('/api/claim', requireAuth, async (req, res) => {
+app.post('/api/claim', requireAuth, claimByWallet, claimByIp, async (req, res) => {
   try {
     const { scan_id, items } = req.body || {};
     const out = await submitClaim({ wallet: req.wallet, scan_id, items });
@@ -145,7 +204,7 @@ app.get('/api/week', requireAuth, (req, res) => {
 /* Flagging stays open: a misclassification report is useful whether or
    not the reporter has signed in, and there is nothing to gain by
    faking one. */
-app.post('/api/flag', (req, res) => {
+app.post('/api/flag', flagByIp, (req, res) => {
   const { barcode, wallet, said, note } = req.body || {};
   if (!barcode) return res.status(400).json({ ok:false, error:'barcode required' });
   db.prepare(`INSERT INTO flag (barcode, wallet, said, note, created_at) VALUES (?,?,?,?,?)`)
@@ -183,7 +242,12 @@ app.get('/api/review', requireAdmin, (req, res) => {
    anything that does not. */
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 6 * 1024 * 1024 } });
 
-app.post('/api/receipt', requireAuth, upload.single('image'), async (req, res) => {
+/* The limits sit between the session check and the upload on purpose:
+   requireAuth reads a header and is nearly free, but multer buffers up
+   to six megabytes before the handler sees anything. A refused request
+   should not pay for that, let alone for the OCR behind it. */
+app.post('/api/receipt', requireAuth, receiptByWallet, receiptByIp,
+         upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'no image' });
 
