@@ -3,6 +3,7 @@ import { db, now, currentRound, ensureWallet, flagForReview, claimWindowDays } f
 import { isPerson } from './passport.js';
 import { resolveProduct, isBarcode, LookupUnavailable } from './products.js';
 import { matchProduct, resolveQuantity } from './receipt-parse.js';
+import { record } from './audit.js';
 
 export const WEEKLY_CAP_G   = 1500;   // g protein per wallet per round
 export const PER_RECEIPT_G  = 1000;   // one shop is not a month's claim
@@ -388,14 +389,33 @@ export async function submitClaim({ wallet, scan_id, items }){
            receipt.image_hash, now());
 
     for (const p of priced){
+      let claimId;
       try {
-        insert.run(addr, round.id, key, p.barcode, p.product_name, p.source_key,
-                   p.protein, p.co2, p.mult, p.points, p.version, 'verified', now());
+        claimId = insert.run(addr, round.id, key, p.barcode, p.product_name, p.source_key,
+                             p.protein, p.co2, p.mult, p.points, p.version, 'verified', now())
+                        .lastInsertRowid;
         accepted.push({ barcode: p.barcode, protein_g: p.protein, points: p.points });
       } catch (e){
         // UNIQUE(receipt_key, barcode) — the same line claimed twice.
         continue;
       }
+
+      /* Inside the transaction, so the entry and the claim commit
+         together. An entry for a claim that rolled back would be a lie,
+         and a claim with no entry is the gap this closes. Every figure
+         that decided the reward is here, including the product version
+         it was priced from — enough to recompute the claim from the
+         cache row without trusting the claim row. */
+      record({
+        subject: 'claim', subject_id: claimId, event: 'created',
+        to_state: 'verified', round_id: round.id, wallet: addr, actor: 'claim-api',
+        detail: {
+          barcode: p.barcode, source_key: p.source_key,
+          product_version: p.version,
+          protein_g: p.protein, mult: p.mult, points: p.points, co2_kg: p.co2,
+          receipt_key: key.slice(0, 16), scan_id,
+        },
+      });
     }
 
     db.prepare(`UPDATE receipt_scan SET consumed_at=? WHERE id=?`).run(now(), scan_id);

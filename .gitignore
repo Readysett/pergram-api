@@ -45,3 +45,6 @@ test-limits-endpoints.db
 test-limits-endpoints.db-*
 test-claim-window.db
 test-claim-window.db-*
+
+test-audit.db
+test-audit.db-*
