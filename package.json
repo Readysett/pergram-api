@@ -10,7 +10,7 @@
     "start": "node server.js",
     "settle": "node settle.js",
     "seed": "node seed.js",
-    "test": "node test-server-derived.js && node test-settle.js && node test-limits-endpoints.js && node test-claim-window.js && node test-audit.js && node test-quantity.js",
+    "test": "node test-server-derived.js && node test-settle.js && node test-limits-endpoints.js && node test-claim-window.js && node test-audit.js && node test-caps.js && node test-quantity.js",
     "test:derived": "node test-server-derived.js",
     "check:classifier": "node check-classifier.js",
     "settle:show": "node settle.js --show",
