@@ -140,6 +140,25 @@ A claim that hits one fails whole and retryable, leaving the receipt
 claimable — a partial write would burn the receipt key and leave the
 remaining lines unclaimable for good.
 
+## What a round paid is written down
+
+Settlement computed the rate and the per-wallet split, printed them, and
+returned them — the only write was marking claims settled. A settled
+round could not be reconstructed afterwards: the rate and the split
+existed only in whatever terminal ran it.
+
+`settle()` now writes the split to `payout` in the same transaction as
+the claims it settles, and the rate beside the pool on `round`. There is
+no state where claims read `settled` and no payout explains them.
+
+    node settle.js <roundId> <poolB3TR>    settle, once
+    node settle.js --show <roundId>        read it back, any time later
+
+Re-settling is refused rather than repeated. The second run would find no
+verified claims, divide a pool by nothing, and overwrite the record with
+a rate of zero — so the first run's numbers stand and the error says
+where to read them.
+
 ## Design notes worth keeping
 
 **Rejections stay generic.** "Already claimed" tells a farmer which field
