@@ -235,7 +235,12 @@ export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcode
     return {
       barcode,
       name: prod.name,
-      status: 'ok',
+      /* A matched line whose size is nowhere — not on the line, not in
+         the product record — is a different failure from no line at all,
+         and reporting both as a match failure said something false about
+         a line that matched fine. The user can act on this one: adding
+         the quantity in Open Food Facts fixes the record for everyone. */
+      status: (line && q.grams === null) ? 'size_unknown' : 'ok',
       matched: !!line,
       line: line ? line.text : null,
       score: line ? line.score : 0,
@@ -266,6 +271,26 @@ export async function scanReceipt({ wallet, roundId, parsed, image_hash, barcode
       product_version: products.has(m.barcode) ? products.get(m.barcode).version : null,
     })),
   });
+
+  /* Counted, not just reported. How often a matched line has no size
+     anywhere is a question about real receipts, and the honest way to
+     answer it is to count it for a while rather than infer it from
+     whichever receipt happened to surface it. Each row is one barcode on
+     one receipt, with the store, so the rate can be read per retailer —
+     a truck stop and a supermarket print very different lines. */
+  const insertOutcome = db.prepare(`
+    INSERT INTO quantity_outcome (at, wallet, barcode, store, outcome, had_line_size, had_record_size)
+    VALUES (?,?,?,?,?,?,?)
+  `);
+  for (const m of matches){
+    if (!m.matched && m.status !== 'size_unknown') continue;
+    const prod = products.get(m.barcode);
+    insertOutcome.run(now(), String(wallet).toLowerCase(), m.barcode,
+      parsed.store || null,
+      m.status === 'size_unknown' ? 'size_unknown' : 'sized',
+      m.grams !== null ? 1 : 0,
+      prod && prod.quantity ? 1 : 0);
+  }
 
   return { scan_id, matches, unavailable,
            scan_order: {
@@ -429,8 +454,19 @@ export async function submitClaim({ wallet, scan_id, items }){
     /* No matching line means the receipt does not show this being
        bought. The product record alone says what a unit weighs, never
        that one was purchased. */
-    if (!line.matched || line.grams === null){
+    if (!line.matched){
       return { ok:false, error:'the receipt does not show a line for ' + barcode };
+    }
+
+    /* The line matched and nothing anywhere says what it weighed: no size
+       on the receipt line, none in the product record. Saying "no
+       matching line" here was simply untrue, and the two call for quite
+       different things from the user — one is a bad match, the other is
+       a gap in a database anyone can fill. */
+    if (line.grams === null){
+      return { ok:false,
+               error:'no size on the receipt or in the product record for ' + barcode
+                   + ' — add the quantity in the Open Food Facts app and it will work next time' };
     }
 
     /* Re-resolving rather than trusting the version recorded on the scan

@@ -265,6 +265,35 @@ CREATE TABLE IF NOT EXISTS product_scan (
 CREATE INDEX IF NOT EXISTS product_scan_lookup
   ON product_scan(wallet, barcode, scanned_at);
 
+/* How often a matched receipt line yields no quantity.
+ *
+ * A line can match perfectly and still leave no size anywhere — none
+ * printed on the line, none in the product record — and the claim then
+ * cannot be priced. How common that is decides whether it is worth
+ * building a way for users to supply the missing size, and that is a
+ * question about real receipts rather than one to reason about: the
+ * receipt that first surfaced it was from a truck stop, where lines are
+ * terse and coverage is thin, and supermarket receipts look nothing like
+ * it.
+ *
+ * So it is counted. The store is kept because the rate almost certainly
+ * differs per retailer, and an average across both would hide it.
+ *
+ * Nothing here feeds a claim. It is a measurement, and it should be read
+ * and then acted on rather than accumulated forever. */
+CREATE TABLE IF NOT EXISTS quantity_outcome (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  at              INTEGER NOT NULL,
+  wallet          TEXT    NOT NULL,
+  barcode         TEXT    NOT NULL,
+  store           TEXT,
+  outcome         TEXT    NOT NULL,   -- sized | size_unknown
+  had_line_size   INTEGER NOT NULL,
+  had_record_size INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS quantity_outcome_by_time ON quantity_outcome(at);
+
 CREATE TABLE IF NOT EXISTS flag (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   barcode    TEXT NOT NULL,

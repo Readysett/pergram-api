@@ -306,6 +306,39 @@ to reach for when a receipt happens to suit one. The earliest live
 registration is the one that counts, so a re-scan can keep it alive but
 never move it.
 
+## When nothing says what size it was
+
+A receipt line can match perfectly and still leave no quantity anywhere
+— none printed on the line, none in the product record. The claim cannot
+be priced, and both layers used to report that as *no matching line*,
+which was untrue about a line that matched fine.
+
+It has its own status now (`size_unknown`), and the app says what fixes
+it: add the quantity in the Open Food Facts app, which fixes the record
+for everyone rather than only for the person who hit it.
+
+**There is deliberately no way for a claimant to type the size in.** A
+quantity supplied by the claimant is precisely what the server stopped
+trusting, and the existing `ask` is safe only because answering can never
+raise a claim. A free-form size has no such ceiling, and caching it per
+barcode would not help: the first claimant would still be priced from
+their own number.
+
+    npm run size-report        # the last 7 days
+    node size-report.js 30     # the last 30
+
+How often this happens decides whether it is worth building a way to
+supply the missing size, and that is a question about real receipts. The
+receipt that first surfaced it was from a truck stop, where lines are
+terse and coverage is thin; supermarket receipts print package sizes and
+are far better covered. So it is counted per store, and the report also
+names the barcodes responsible — if a handful of products account for
+most of it, filling those in by hand is cheaper than building anything.
+
+If the counts justify it, the shape to build is one where the answer
+sets the product's size for *future* claims and does not price the
+answering claim. Nobody can then profit from their own number.
+
 ## Design notes worth keeping
 
 **Rejections stay generic.** "Already claimed" tells a farmer which field
