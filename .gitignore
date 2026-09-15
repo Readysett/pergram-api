@@ -48,3 +48,6 @@ test-claim-window.db-*
 
 test-audit.db
 test-audit.db-*
+
+test-caps.db
+test-caps.db-*

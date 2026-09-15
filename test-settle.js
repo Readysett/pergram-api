@@ -15,7 +15,7 @@ rmSync(process.env.DB_PATH + '-shm', { force: true });
 
 const { db, now, currentRound, ensureWallet } = await import('./db.js');
 const { settle, payoutsFor } = await import('./settle.js');
-const { WEEKLY_CAP_G } = await import('./claims.js');
+const { weeklyCapG } = await import('./db.js');
 
 let failures = 0;
 const ok = (name, cond) => { if (!cond) failures++; console.log((cond ? 'ok   ' : 'FAIL ') + name); };
@@ -27,6 +27,7 @@ const near = (name, got, want) =>
 const A = '0x' + 'a'.repeat(40);
 const B = '0x' + 'b'.repeat(40);
 const round = currentRound();
+const CAP = weeklyCapG(round);
 
 function claim(wallet, barcode, protein, mult){
   ensureWallet(wallet);
@@ -43,7 +44,7 @@ function claim(wallet, barcode, protein, mult){
 
 /* A is under the cap. B is well over it, so its points scale down. */
 claim(A, '111', 200, 0.56);                 // 112 points
-claim(B, '222', WEEKLY_CAP_G, 0.56);        // at the cap exactly
+claim(B, '222', CAP, 0.56);                 // at the cap exactly
 claim(B, '333', 500, 1.00);                 // pushes B over
 
 console.log('\n--- settling records what it paid ---');
@@ -72,9 +73,9 @@ ok('the uncapped one is not',               aRow.capped === false);
 
 /* Cap scaling is proportional, so B's points are its raw points times
    the cap over its protein — not truncated to whichever claim was last. */
-const bProtein = WEEKLY_CAP_G + 500;
-const bRaw     = WEEKLY_CAP_G * 0.56 + 500 * 1.00;
-near('capped points scale proportionally', bRow.points, bRaw * (WEEKLY_CAP_G / bProtein));
+const bProtein = CAP + 500;
+const bRaw     = CAP * 0.56 + 500 * 1.00;
+near('capped points scale proportionally', bRow.points, bRaw * (CAP / bProtein));
 eq('and the protein recorded is what was claimed, before scaling', bRow.protein, bProtein);
 
 console.log('\n--- claims and payouts move together ---');
@@ -96,6 +97,34 @@ console.log('\n--- a settled round cannot be quietly re-settled ---');
   eq('the rate is untouched', after.rate_b3tr_per_point, stored.rate_b3tr_per_point);
   eq('and the split is untouched',
      after.payouts.map(p => +p.b3tr.toFixed(9)), stored.payouts.map(p => +p.b3tr.toFixed(9)));
+}
+
+console.log('\n--- a round settles under the cap it was opened with ---');
+{
+  /* Not the current constant: a round already part-claimed must not be
+     re-capped by a later raise. */
+  const old = db.prepare(`INSERT INTO round (opens_at, closes_at, weekly_cap_g)
+                          VALUES (?,?,1500)`).run(now(), now() + 1);
+  const id = Number(old.lastInsertRowid);
+  eq('the round carries its own cap', weeklyCapG(
+     db.prepare(`SELECT * FROM round WHERE id=?`).get(id)), 1500);
+
+  ensureWallet(A);
+  db.prepare(`INSERT OR IGNORE INTO receipt (key, wallet, purchased, created_at)
+              VALUES ('oldk',?,?,?)`).run(A, now(), now());
+  db.prepare(`
+    INSERT INTO claim (wallet, round_id, receipt_key, barcode, product, source_key,
+                       protein_g, co2_kg, mult, points, state, created_at)
+    VALUES (?,?,'oldk','888','P','whey',3000,108,1.0,3000,'verified',?)
+  `).run(A, id, now());
+
+  const r = settle(id, 100);
+  /* 3000g against a 1500g cap scales points by a half. */
+  near('scaled against 1500, not 3000', r.payouts[0].points, 1500);
+  eq('and the cap is recorded in the log',
+     JSON.parse(db.prepare(
+       `SELECT detail FROM audit WHERE round_id=? AND subject='round' AND event='settled'`
+     ).get(id).detail).weekly_cap_g, 1500);
 }
 
 console.log('\n--- a round with nothing in it settles to nothing, not a crash ---');

@@ -1,13 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { db, now, currentRound, ensureWallet, flagForReview, claimWindowDays } from './db.js';
+import { db, now, currentRound, ensureWallet, flagForReview,
+         claimWindowDays, weeklyCapG, WEEKLY_CAP_G } from './db.js';
 import { isPerson } from './passport.js';
 import { resolveProduct, isBarcode, LookupUnavailable } from './products.js';
 import { matchProduct, resolveQuantity } from './receipt-parse.js';
 import { record } from './audit.js';
 
-export const WEEKLY_CAP_G   = 1500;   // g protein per wallet per round
-export const PER_RECEIPT_G  = 1000;   // one shop is not a month's claim
-export const ROLLOVER_MAX_G = 3000;
+/* Re-exported so callers keep importing the cap from here. The value and
+   the per-round accessor live in db.js, beside the column they are
+   stamped on.
+ *
+ * There is no rollover and no per-receipt limit. ROLLOVER_MAX_G was
+ * declared here and never read by anything — a documented behaviour the
+ * code did not have. PER_RECEIPT_G existed to stop one shop being a
+ * month's claim, and the weekly cap and the five-day window now do that
+ * between them; at a 3000g cap it would have refused a single bulk tub
+ * the cap has room for. Both are gone rather than adjusted to numbers
+ * that make them redundant. */
+export { WEEKLY_CAP_G, weeklyCapG };
 
 /* A scan is a reading of a receipt, not a claim. It exists only long
    enough for the user to look at the matches and confirm them. */
@@ -176,29 +186,32 @@ export function sweepScans(){
   db.prepare(`DELETE FROM receipt_scan WHERE created_at < ?`).run(now() - SCAN_TTL_MS);
 }
 
-function weekView(t, extra = {}){
+/* The cap is the round's, not the constant's: a round settles under the
+   figure it was opened with, so a raise must not reach back into one
+   that is already part-claimed. */
+function weekView(t, cap, extra = {}){
   return {
     protein_g: t.protein,
-    counted_g: Math.min(t.protein, WEEKLY_CAP_G),
-    cap_g: WEEKLY_CAP_G,
+    counted_g: Math.min(t.protein, cap),
+    cap_g: cap,
     points_raw: t.points,
     co2_kg: t.co2,
-    over_cap: t.protein > WEEKLY_CAP_G,
+    over_cap: t.protein > cap,
     ...extra,
   };
 }
 
-function replay(addr, key, roundId){
+function replay(addr, key, round){
   const prior = db.prepare(`
     SELECT barcode, protein_g, points FROM claim WHERE wallet=? AND receipt_key=?
   `).all(addr, key);
-  const t = weekTotals(addr, roundId);
+  const t = weekTotals(addr, round.id);
   return {
     ok: true,
-    round: roundId,
+    round: round.id,
     replayed: true,
     accepted: prior.map(c => ({ barcode: c.barcode, protein_g: c.protein_g, points: c.points })),
-    week: weekView(t),
+    week: weekView(t, weeklyCapG(round)),
   };
 }
 
@@ -266,7 +279,7 @@ export async function submitClaim({ wallet, scan_id, items }){
        a receipt accepted once ends up counted twice. Replay the original
        result — sending the request twice must leave the same state as
        sending it once. */
-    return replay(addr, key, round.id);
+    return replay(addr, key, round);
   }
 
   /* A receipt dated in the future, or long in the past, is either a bad
@@ -364,13 +377,9 @@ export async function submitClaim({ wallet, scan_id, items }){
 
   if (!priced.length) return { ok:false, error:'nothing on this receipt could be claimed' };
 
-  const batchProtein = priced.reduce((s, p) => s + p.protein, 0);
-  if (batchProtein > PER_RECEIPT_G){
-    return { ok:false, error:`one receipt may claim at most ${PER_RECEIPT_G}g of protein` };
-  }
-
+  const cap    = weeklyCapG(round);
   const before = weekTotals(addr, round.id);
-  const room   = Math.max(0, WEEKLY_CAP_G - before.protein);
+  const room   = Math.max(0, cap - before.protein);
 
   /* ---------- write ---------- */
   const insert = db.prepare(`
@@ -424,7 +433,7 @@ export async function submitClaim({ wallet, scan_id, items }){
     db.exec('ROLLBACK');
     /* Two requests raced on the same receipt. The winner's claims stand;
        report those rather than a failure the caller would store offline. */
-    if (db.prepare(`SELECT 1 FROM receipt WHERE key=?`).get(key)) return replay(addr, key, round.id);
+    if (db.prepare(`SELECT 1 FROM receipt WHERE key=?`).get(key)) return replay(addr, key, round);
     throw e;
   }
 
@@ -432,7 +441,7 @@ export async function submitClaim({ wallet, scan_id, items }){
 
   /* New wallet claiming the maximum immediately is the signature of a
      farm. Flag it; never auto-reject on a heuristic. */
-  if ((now() - w.created_at) < 3600000 && after.protein >= WEEKLY_CAP_G * 0.8){
+  if ((now() - w.created_at) < 3600000 && after.protein >= cap * 0.8){
     flagForReview(addr, 'fast-max', 'hit ' + Math.round(after.protein) + 'g within an hour of signup');
   }
 
@@ -440,6 +449,6 @@ export async function submitClaim({ wallet, scan_id, items }){
     ok: true,
     round: round.id,
     accepted,
-    week: weekView(after, { room_before_g: room }),
+    week: weekView(after, cap, { room_before_g: room }),
   };
 }

@@ -1,5 +1,5 @@
 import { db, now, currentRound } from './db.js';
-import { WEEKLY_CAP_G } from './claims.js';
+import { weeklyCapG } from './db.js';
 import { record } from './audit.js';
 
 /* Round settlement.
@@ -34,10 +34,15 @@ export function settle(roundId, poolB3tr){
 
   /* The cap scales a wallet's points proportionally rather than
      truncating whichever claim happened to be last. Scan order must not
-     change what anyone earns. */
+     change what anyone earns.
+   *
+     The round's own cap, not the current constant: a round settles under
+     the figure it was opened with. Reading the constant here would mean
+     a raise silently re-capped every round still waiting to settle. */
+  const cap = weeklyCapG(round);
   let total = 0;
   const scaled = wallets.map(w => {
-    const scale = w.protein > WEEKLY_CAP_G ? WEEKLY_CAP_G / w.protein : 1;
+    const scale = w.protein > cap ? cap / w.protein : 1;
     const pts = w.points * scale;
     total += pts;
     return { wallet: w.wallet, protein: w.protein, points: pts, capped: scale < 1 };
@@ -71,6 +76,7 @@ export function settle(roundId, poolB3tr){
       subject: 'round', subject_id: roundId, event: 'settled',
       from_state: round.state, to_state: 'settling', round_id: roundId, actor: 'settle',
       detail: { pool_b3tr: poolB3tr, total_points: total, rate_b3tr_per_point: rate,
+                weekly_cap_g: cap,
                 wallets: payouts.length, claims_settled: moved.length },
     });
 

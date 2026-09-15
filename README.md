@@ -17,7 +17,10 @@ Needs Node 22.5 or newer (`node:sqlite` is built in above that).
   receipt cannot be claimed twice, by anyone.
 - VeBetterPassport personhood check before any claim is accepted, cached
   six hours, failing closed if the node is unreachable.
-- Weekly cap of 1500g protein per wallet, 1000g per receipt.
+- Cap of 3000g protein per wallet per round. No rollover — nothing
+  carries between rounds, and an unused remainder is simply not claimed.
+- No per-receipt limit. The cap and the five-day window do that job
+  between them.
 - Receipts must be dated within the round's claim window (5 days).
 - Round settlement at `pool / total points`, with the cap scaling a
   wallet's points proportionally rather than truncating the last claim.
@@ -190,10 +193,10 @@ the most exposed thing here, whatever it writes.
 Defaults are env-tunable: the right value depends on the OCR bill and on
 how many people share an address, and neither is knowable from the code.
 
-## The claim window belongs to the round
+## The caps belong to the round
 
-How far back a receipt may be dated is stamped on the round when it
-opens, not read from a constant at claim time. Tightening the constant
+Both the protein cap and how far back a receipt may be dated are stamped
+on the round when it opens, not read from a constant at claim time. Tightening the constant
 therefore takes effect at the next round boundary rather than voiding
 receipts mid-round that were claimable the same morning — and the round
 is already the unit that prices, caps and payouts are pinned to.
@@ -202,9 +205,33 @@ Rounds opened before the column existed read NULL and keep the 30 days
 they were actually run under. Reading them as anything else would
 rewrite what their claimants were entitled to.
 
-`CLAIM_WINDOW_DAYS` (default 5) sets what the *next* round is stamped
-with. `/api/week` returns the open round's window so the app can say it
-without hardcoding a number that is not its to hold.
+`CLAIM_WINDOW_DAYS` (default 5) and `WEEKLY_CAP_G` (default 3000) set
+what the *next* round is stamped with. `/api/week` returns the open
+round's figures so the app can state them without hardcoding numbers
+that are not its to hold. Settlement scales a wallet's points by the
+round's own cap, so a raise cannot re-cap a round still waiting to
+settle.
+
+### Why 3000, and why no per-receipt limit
+
+1500 was calibrated against *consumption* — roughly 200g of protein a
+day for a heavy user. But the cap bounds *purchasing*, and those are not
+the same quantity: a monthly shop, or one 2kg tub of whey at about 1500g
+of protein, reached it in a single go. That catches ordinary shoppers
+rather than farmers.
+
+`PER_RECEIPT_G` (1000g) existed to stop one shop being a month's claim.
+The cap and the five-day window now do that between them, and against a
+3000g cap it would have refused a single bulk tub the cap has room for.
+It is removed rather than raised to a number that makes it redundant.
+
+`ROLLOVER_MAX_G` was declared and never read by anything — a documented
+behaviour the code did not have. Also removed, so the two agree.
+
+Going over the cap does not refuse a claim. Settlement scales the
+wallet's points down proportionally instead; refusing at claim time
+would truncate whichever claim happened to be last, and scan order must
+not decide what anyone earns.
 
 ## The audit log
 

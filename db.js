@@ -298,6 +298,15 @@ addColumn('claim', 'product_version', 'INTEGER');
  * the change arrives when the next round opens, not retroactively. */
 addColumn('round', 'claim_window_days', 'INTEGER');
 
+/* The protein cap this round was opened under. Stamped at creation for
+   the same reason the claim window is: raising it mid-round would change
+   what an open round allows for claims already made under the old
+   figure, and settlement scales a wallet's points by this number.
+   Rounds predating the column read NULL and keep the 1500 they ran
+   under — that is what their claimants were capped at, and settling them
+   against 3000 would rewrite it. */
+addColumn('round', 'weekly_cap_g', 'REAL');
+
 addColumn('round', 'total_points', 'REAL');
 addColumn('round', 'rate_b3tr_per_point', 'REAL');
 addColumn('round', 'settled_at', 'INTEGER');
@@ -325,6 +334,26 @@ export const now = () => Date.now();
    the NEXT round, never one that is already open and part-claimed. */
 export const CLAIM_WINDOW_DAYS = Number(process.env.CLAIM_WINDOW_DAYS || 5);
 
+/* Protein a wallet may claim in one round. Nothing carries between
+   rounds: the cap is a hard per-round limit, and an unused remainder is
+   simply not claimed.
+ *
+ * 3000g, not the 1500 this started at. 1500 was calibrated against
+ * CONSUMPTION — roughly 200g a day for a heavy user — but the cap bounds
+ * PURCHASING, and those are not the same quantity. A monthly shop, or a
+ * single 2kg tub of whey at around 1500g of protein, reached the old cap
+ * in one go. That catches ordinary shoppers rather than farmers.
+ *
+ * The receipt is the real control. This is a backstop. */
+export const WEEKLY_CAP_G = Number(process.env.WEEKLY_CAP_G || 3000);
+
+/* What rounds opened before the column was added were capped at. Not a
+   value chosen now — it is the figure those rounds actually ran under. */
+export const LEGACY_WEEKLY_CAP_G = 1500;
+
+export const weeklyCapG = round =>
+  round && round.weekly_cap_g != null ? round.weekly_cap_g : LEGACY_WEEKLY_CAP_G;
+
 /* What a round created before the column was added is treated as. Not a
    value anyone chose now — it is what those rounds were actually run
    under, and reading them as anything else would rewrite history. */
@@ -340,8 +369,9 @@ export function currentRound(){
   if (r) return r;
   const t = now();
   const week = 7 * 24 * 3600 * 1000;
-  db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days) VALUES (?, ?, ?)`)
-    .run(t, t + week, CLAIM_WINDOW_DAYS);
+  db.prepare(`INSERT INTO round (opens_at, closes_at, claim_window_days, weekly_cap_g)
+              VALUES (?, ?, ?, ?)`)
+    .run(t, t + week, CLAIM_WINDOW_DAYS, WEEKLY_CAP_G);
   const opened = db.prepare(`SELECT * FROM round WHERE state='open' ORDER BY id DESC LIMIT 1`).get();
 
   /* A round opening is the first event in its own history, and it fixes
@@ -351,7 +381,8 @@ export function currentRound(){
     subject: 'round', subject_id: opened.id, event: 'opened',
     to_state: 'open', round_id: opened.id, actor: 'server',
     detail: { opens_at: opened.opens_at, closes_at: opened.closes_at,
-              claim_window_days: opened.claim_window_days },
+              claim_window_days: opened.claim_window_days,
+              weekly_cap_g: opened.weekly_cap_g },
   });
 
   return opened;
