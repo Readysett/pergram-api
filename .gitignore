@@ -51,3 +51,5 @@ test-audit.db-*
 
 test-caps.db
 test-caps.db-*
+test-scan-order.db
+test-scan-order.db-*
